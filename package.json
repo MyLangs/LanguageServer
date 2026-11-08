@@ -1,0 +1,201 @@
+{
+  "name": "mylang",
+  "displayName": "MyLang",
+  "description": "Language support for MyLang2: language server with diagnostics, completion, hover, go to definition, rename, semantic highlighting and more.",
+  "version": "1.1.0",
+  "publisher": "sempai-07",
+  "license": "ISC",
+  "engines": {
+    "vscode": "^1.75.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Linters"
+  ],
+  "keywords": [
+    "mylang",
+    "mylang2",
+    "language server",
+    "lsp"
+  ],
+  "main": "./client/extension.js",
+  "activationEvents": [
+    "onLanguage:mylang",
+    "workspaceContains:**/*.ml",
+    "workspaceContains:mylang.json"
+  ],
+  "scripts": {
+    "gen:stdlib": "node tools/gen-stdlib.js",
+    "test": "node test/run.js",
+    "package": "npx @vscode/vsce package",
+    "prettier": "prettier --write \"**/*.{js,json,md,ts}\"",
+    "prettier:check": "prettier --check \"**/*.{js,json,md,ts}\""
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "mylang",
+        "aliases": [
+          "MyLang",
+          "mylang"
+        ],
+        "extensions": [
+          ".ml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mylang",
+        "scopeName": "source.mylang",
+        "path": "./syntaxes/mylang.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "mylang",
+        "path": "./snippets/mylang.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mylang.runFile",
+        "title": "MyLang: Run Current File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mylang.restartServer",
+        "title": "MyLang: Restart Language Server"
+      },
+      {
+        "command": "mylang.showStatus",
+        "title": "MyLang: Show Language Server Status"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "mylang.runFile",
+          "when": "resourceLangId == mylang",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "[mylang]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        }
+      }
+    },
+    "configuration": {
+      "title": "MyLang",
+      "properties": {
+        "mylang.compiler.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the MyLang2 compiler package (folder with `package.json`, or its `dist/src/index.js`). Used for exact syntax errors. When empty the server looks in `<workspace>/dist`, `<workspace>/node_modules/mylang2` and next to the extension. Without a compiler a built-in checker is used."
+        },
+        "mylang.executable": {
+          "type": "string",
+          "default": "mylang",
+          "description": "Command used by “Run Current File”."
+        },
+        "mylang.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable diagnostics."
+        },
+        "mylang.diagnostics.unresolved": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
+          "default": "warning",
+          "description": "Severity of references to names that are not defined."
+        },
+        "mylang.diagnostics.unknownMembers": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
+          "default": "warning",
+          "description": "Severity of unknown members of built-in modules (e.g. strings.splitt)."
+        },
+        "mylang.diagnostics.unknownModules": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
+          "default": "warning",
+          "description": "Severity of imports of unknown module names."
+        },
+        "mylang.diagnostics.unused": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
+          "default": "hint",
+          "description": "How unused variables and imports are reported."
+        },
+        "mylang.diagnostics.maxProblems": {
+          "type": "number",
+          "default": 200,
+          "description": "Maximum number of problems reported per file."
+        },
+        "mylang.completion.autoImport": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer built-in modules that are not imported yet and add the import automatically."
+        },
+        "mylang.globals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra global names (e.g. defined by `initScript` in mylang.json) that must not be reported as undefined."
+        },
+        "mylang.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication with the language server."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
+  }
+}
