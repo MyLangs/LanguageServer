@@ -3,11 +3,19 @@
   "displayName": "MyLang",
   "description": "Language support for MyLang2: language server with diagnostics, completion, hover, go to definition, rename, semantic highlighting and more.",
   "version": "1.1.0",
-  "publisher": "sempai-07",
+  "publisher": "Sempai-07",
+  "author": "Sempai<zadmanthegreat@gmail.com>",
   "license": "ISC",
   "engines": {
     "vscode": "^1.75.0",
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MyLangs/LanguageServer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MyLangs/LanguageServer/issues"
   },
   "categories": [
     "Programming Languages",
