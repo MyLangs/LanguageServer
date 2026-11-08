@@ -1,6 +1,6 @@
 {
   "name": "mylang2-language-support",
-  "displayName": "MyLang",
+  "displayName": "MyLang2 Language Support",
   "description": "Language support for MyLang2: language server with diagnostics, completion, hover, go to definition, rename, semantic highlighting and more.",
   "version": "1.1.0",
   "publisher": "Sempai-07",
