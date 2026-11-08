@@ -1,12 +1,12 @@
 # Changelog
 
-## 1.1.0 — JSDoc и улучшение читаемости (обновлённая сборка)
+## 1.1.0 — JSDoc Support and Code Readability Improvements
 
-- Комментарии и форматирование основных JavaScript-модулей приведены к более понятному стилю без изменения архитектуры и путей файлов.
-- Добавлен разбор JSDoc: `@param`, `@returns`, `@type`, `@deprecated`, `@example`, `@throws`, `@see` и произвольные теги.
-- Hover, автодополнение и Signature Help показывают структурированную документацию, типы и описания параметров.
-- Подсветка JSDoc и автодополнение тегов при вводе `@`, с подстановкой имён аргументов функций.
-- Расширены автоматические LSP-тесты на документацию, подсказки и привязку комментариев.
+- **Improved Code Readability:** Refined comments and formatting across core JavaScript modules while preserving the existing architecture, project structure, and file paths.
+- **Added JSDoc Support:** Implemented parsing for `@param`, `@returns`, `@type`, `@deprecated`, `@example`, `@throws`, `@see`, and custom JSDoc tags.
+- **Enhanced IntelliSense:** Hover, Autocompletion, and Signature Help now display structured documentation, type information, and parameter descriptions.
+- **JSDoc Syntax Highlighting:** Added syntax highlighting and automatic tag suggestions when typing `@`, including automatic insertion of function parameter names.
+- **Expanded Automated Testing:** Added LSP tests to verify documentation parsing, IntelliSense functionality, and correct association of comments with declarations.
 
 ## 1.0.0
 
