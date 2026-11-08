@@ -9,6 +9,7 @@ const { LineIndex } = require("../core/text");
 const { analyze } = require("../core/analyzer");
 const { loadCompiler, compilerStatus } = require("../core/compiler");
 const M = require("../core/modules");
+const { resolvePackage } = require("../core/packages");
 
 const completion = require("../features/completion");
 const { hover, signatureHelp } = require("../features/hover");
@@ -318,9 +319,20 @@ class Server {
   /** Gives `import "./utils.ml"` namespaces the exported members of the target file. */
   enrichImports(d) {
     for (const imp of d.analysis.imports) {
-      if (imp.kind !== "file") continue;
+      let dir = null;
+      if (imp.kind === "package") {
+        try {
+          dir = path.dirname(fileURLToPath(d.uri));
+        } catch {
+          dir = null;
+        }
+        // status + package info drive diagnostics, hover and completion
+        imp.resolution = dir ? resolvePackage(dir, imp.source) : null;
+      }
+      if (imp.kind !== "file" && imp.kind !== "package") continue;
       for (const sym of imp.symbols) {
         if (!sym.type || sym.type.kind !== "file") continue;
+        if (imp.resolution && imp.resolution.pkg) sym.type.info = imp.resolution.pkg;
         const file = nav.resolveImportFile(d.uri, imp.source);
         if (!file || !file.endsWith(".ml")) continue;
         const target = this.getDoc(pathToFileURL(file).toString());
@@ -431,6 +443,14 @@ class Server {
       this.disk.delete(ch.uri);
     }
     this.indexWorkspace();
+    // `mylang install` / edits of mylang.json or .module change what imports resolve to
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      for (const d of this.docs.values()) {
+        d.analysis = null;
+        this.scheduleDiagnostics(d.uri, 0);
+      }
+    }, 300);
   }
 
   onFolders(params) {

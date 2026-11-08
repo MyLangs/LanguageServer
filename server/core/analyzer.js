@@ -937,6 +937,7 @@ class Analyzer {
     let type = null;
     if (entry.builtin) type = M.moduleType(entry.source);
     else if (info.kind === "file") type = { kind: "file", path: entry.source };
+    else if (info.kind === "package") type = { kind: "file", path: entry.source, package: true };
 
     if (destructured) {
       for (const nameTok of destructured) {

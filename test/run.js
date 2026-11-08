@@ -191,6 +191,50 @@ async function test(name, fn) {
     assert.ok(link[0].target.endsWith("utils.ml"));
   });
 
+  await test("package import: members, definition, hover, link (.module)", async () => {
+    const d = await open('import "SempaI-07:console";\nconsole.\nconsole.log("x");\n');
+    assert.deepStrictEqual(d.diags, [], JSON.stringify(d.diags));
+    const items = await c.request("textDocument/completion", d.at(1, 8));
+    assert.deepStrictEqual(labels(items).sort(), ["VERSION", "log"]);
+    const def = await c.request("textDocument/definition", d.at(2, 9));
+    assert.ok(def[0].uri.endsWith("console/src/index.ml"), JSON.stringify(def));
+    const onString = await c.request("textDocument/definition", d.at(0, 12));
+    assert.ok(onString[0].uri.endsWith("console/src/index.ml"), JSON.stringify(onString));
+    const hv = await c.request("textDocument/hover", d.at(0, 12));
+    assert.ok(hv && /1\.2\.3/.test(hv.contents.value) && /Console helpers/.test(hv.contents.value));
+    const link = await c.request("textDocument/documentLink", { textDocument: { uri: d.uri } });
+    assert.ok(link[0].target.endsWith("console/src/index.ml"));
+  });
+
+  await test("package import resolves from sub-folders (searched upwards)", async () => {
+    const uri = `file://${fixtures}/sub/deep.ml`;
+    const diags = await c.open(uri, 'import "SempaI-07:console";\nconsole.log("x");\n');
+    assert.deepStrictEqual(diags, [], JSON.stringify(diags));
+  });
+
+  await test("package import problems: not declared / not installed", async () => {
+    const d = await open(
+      'import "Other:lib";\nimport "X:ghost";\nimport "Nope:nothing";\nlib.helper();\n',
+    );
+    const byLine = (n) =>
+      d.diags.find((x) => x.range.start.line === n && x.code.startsWith("package-"));
+    assert.strictEqual(byLine(0).code, "package-not-declared", JSON.stringify(d.diags));
+    assert.strictEqual(byLine(1).code, "package-not-installed", JSON.stringify(d.diags));
+    assert.strictEqual(byLine(2).code, "package-not-declared", JSON.stringify(d.diags));
+    assert.ok(/mylang install/.test(byLine(1).message));
+  });
+
+  await test("package completion: import path and auto-import", async () => {
+    const d = await open('import "');
+    const mods = await c.request("textDocument/completion", d.at(0, 8));
+    const pkg = mods.find((i) => i.label === "SempaI-07:console");
+    assert.ok(pkg && /1\.2\.3/.test(pkg.detail), labels(mods).join());
+    const d2 = await open("conso\n");
+    const ai = await c.request("textDocument/completion", d2.at(0, 5));
+    const item = ai.find((i) => i.label === "console");
+    assert.ok(item && item.additionalTextEdits[0].newText.includes('import "SempaI-07:console";'));
+  });
+
   await test("document symbols (hierarchical) + workspace symbols", async () => {
     const d = await open(
       "struct P { var x; func len() { return 1; } }\nenum E { A; B; }\nfunc f() {}\n",

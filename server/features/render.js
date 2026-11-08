@@ -77,6 +77,15 @@ function renderSymbol(sym) {
   if (sym.kind === "import" && sym.importSource) {
     const lib = lang.LIB_DOCS[sym.name] || lang.LIB_DOCS[sym.importSource];
     if (lib && lib.description) parts.push(lib.description);
+    if (sym.type && sym.type.package && sym.type.info) {
+      const p = sym.type.info;
+      parts.push(
+        `**${p.name}**` +
+          (p.version ? ` v${p.version}` : "") +
+          "  ·  _package_" +
+          (p.description ? "\n\n" + p.description : ""),
+      );
+    }
   }
   if (sym.kind === "struct" && sym.members) {
     const fields = [...sym.members.values()].filter((m) => m.kind === "field").map((m) => m.name);
@@ -133,4 +142,30 @@ function renderModule(moduleName) {
   return parts.join("\n\n");
 }
 
-module.exports = { renderDoc, renderSymbol, renderStdMember, renderModule, symbolSignature, fence };
+/** Hover / completion docs of an installed package (`import "Owner:repo"`). */
+function renderPackage(source, resolution) {
+  const parts = [fence(`import "${source}";`)];
+  const r = resolution || { status: "not-installed", pkg: null };
+  const pkg = r.pkg;
+  if (pkg) {
+    parts.push(`**${pkg.name}**` + (pkg.version ? ` v${pkg.version}` : "") + "  ·  _package_");
+    if (pkg.description) parts.push(pkg.description);
+    const rel = require("path").relative(pkg.root, pkg.main).replace(/\\/g, "/");
+    parts.push(`Entry: \`${rel}\``);
+  }
+  if (r.status === "not-declared")
+    parts.push('⚠️ Not listed in `"dependencies"` of `mylang.json`.');
+  else if (r.status === "not-installed") parts.push("⚠️ Not installed. Run `mylang install`.");
+  else if (r.status === "no-main") parts.push("⚠️ The entry file of the package is missing.");
+  return parts.join("\n\n");
+}
+
+module.exports = {
+  renderDoc,
+  renderSymbol,
+  renderStdMember,
+  renderModule,
+  renderPackage,
+  symbolSignature,
+  fence,
+};

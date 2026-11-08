@@ -1,0 +1,7 @@
+{
+  "main": "index.ml",
+  "dependencies": {
+    "console": "SempaI-07:console",
+    "ghost": "X:ghost"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "console",
+  "version": "1.2.3",
+  "description": "Console helpers for MyLang",
+  "main": "src/index.ml"
+}

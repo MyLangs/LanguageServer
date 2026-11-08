@@ -7,6 +7,7 @@ const { fileURLToPath, pathToFileURL } = require("url");
 const lang = require("../data/language");
 const M = require("../core/modules");
 const { occurrenceAt } = require("../core/analyzer");
+const { resolvePackage } = require("../core/packages");
 
 const SymKind = {
   File: 1,
@@ -29,6 +30,14 @@ const SymKind = {
 /** Resolves an import source relative to the importing document. */
 function resolveImportFile(docUri, source) {
   if (/^https?:\/\//.test(source)) return null;
+  if (M.importInfo(source).kind === "package") {
+    try {
+      const { status, pkg } = resolvePackage(path.dirname(fileURLToPath(docUri)), source);
+      return status === "ok" ? pkg.main : null;
+    } catch {
+      return null;
+    }
+  }
   if (!/\.(ml|json|js)$/.test(source)) return null;
   try {
     const dir = path.dirname(fileURLToPath(docUri));

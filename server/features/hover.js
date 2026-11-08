@@ -3,7 +3,14 @@
 const lang = require("../data/language");
 const M = require("../core/modules");
 const { occurrenceAt } = require("../core/analyzer");
-const { renderDoc, renderSymbol, renderStdMember, renderModule, fence } = require("./render");
+const {
+  renderDoc,
+  renderSymbol,
+  renderStdMember,
+  renderModule,
+  renderPackage,
+  fence,
+} = require("./render");
 const { formatParams } = require("../core/util");
 const { parseJSDoc, parameterDoc, renderJSDoc } = require("../core/jsdoc");
 
@@ -85,6 +92,12 @@ function hover(doc, offset) {
     if (entry && entry.builtin) {
       return {
         contents: { kind: "markdown", value: renderModule(entry.source) },
+        range: toRange(tok.start, tok.end),
+      };
+    }
+    if (entry && entry.kind === "package") {
+      return {
+        contents: { kind: "markdown", value: renderPackage(entry.source, entry.resolution) },
         range: toRange(tok.start, tok.end),
       };
     }

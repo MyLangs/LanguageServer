@@ -6,7 +6,7 @@ Language Server (LSP) for the **MyLang2** programming language (`.ml`).
 
 - **Syntax Errors** — detected by the language's actual `Lexer`/`Parser` (a simplified built-in syntax checker is used when the compiler is unavailable).
 - **Diagnostics** — undefined identifiers, assignments to `as const` / `as readonly`, duplicate declarations, nonexistent module members (`strings.splitt` → "Did you mean `split`?"), unknown modules, unused `var` declarations, and unused imports.
-- **Autocompletion** — module members, structures, enums, `this`, results returned by `http.Server()`, and `ctx` inside route handlers; keyword snippets; paths in `import "…"`; and **automatic imports** for built-in modules.
+- **Autocompletion** — module members, structures, enums, `this`, results returned by `http.Server()`, and `ctx` inside route handlers; keyword snippets; paths in `import "…"`; installed packages from `.module` (`import "Owner:repo"`), and **automatic imports** for built-in modules and installed packages.
 - **JSDoc Comments** (`/** ... */`) — parameter descriptions and types, return values, examples, deprecated APIs, and tag suggestions triggered by `@`.
 - **Language Features** — Hover documentation, signature help, Go to Definition (including cross-file navigation through `import "./file.ml"`), Find All References, Rename Symbol, Document Outline, Workspace Symbol Search, Code Folding, and Semantic Highlighting.
 - **Quick Fixes** — add missing imports, fix typos, and remove unused imports.

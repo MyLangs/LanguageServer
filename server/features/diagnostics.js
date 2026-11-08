@@ -45,6 +45,19 @@ function messageFor(issue) {
   }
 }
 
+function packageMessage(source, r) {
+  switch (r.status) {
+    case "not-declared":
+      return `Package '${source}' is not listed in "dependencies" of mylang.json`;
+    case "not-installed":
+      return `Package '${source}' is not installed. Run 'mylang install'`;
+    case "no-main":
+      return `Package '${source}' has no entry file '${require("path").basename(r.pkg.main)}'`;
+    default:
+      return source;
+  }
+}
+
 /**
  * Builds the LSP diagnostics of a document.
  * @param {object} doc  {text, lines, analysis}
@@ -161,6 +174,23 @@ function computeDiagnostics(doc, settings, env) {
     if (issue.data.name) data.name = issue.data.name;
     if (Object.keys(data).length) diag.data = data;
     out.push(diag);
+  }
+
+  // 3. package imports: declared in mylang.json? installed in .module? entry file present?
+  const moduleSeverity = level("unknownModules", "warning");
+  if (moduleSeverity != null && !(syntax && syntax.length)) {
+    for (const imp of analysis.imports) {
+      const r = imp.resolution;
+      if (imp.kind !== "package" || !r || r.status === "ok") continue;
+      const code = `package-${r.status}`;
+      out.push({
+        range: lines.range(imp.tok.start, imp.tok.end),
+        severity: moduleSeverity,
+        source: "mylang",
+        code,
+        message: packageMessage(imp.source, r),
+      });
+    }
   }
 
   const max = Number(cfg.maxProblems) > 0 ? Number(cfg.maxProblems) : 200;

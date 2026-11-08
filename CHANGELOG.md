@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 — Package imports (`.module`)
+
+- **Package imports:** `import "Owner:repo"` now resolves to the package installed in `.module/<owner>/<repo>` (entry file taken from the package's `mylang.json`, searched upwards like `node_modules`).
+- **IntelliSense for packages:** member completion, Go to Definition (on the import string and on `pkg.member`), Hover with version/description, document links, signature help from the package's JSDoc.
+- **Completion:** installed packages are suggested inside `import "…"`, and typing a package name offers an automatic import.
+- **Diagnostics:** `package-not-declared` (missing in `dependencies`), `package-not-installed` (run `mylang install`), `package-no-main` (entry file missing). Severity follows `mylang.diagnostics.unknownModules`.
+- Diagnostics refresh automatically after `mylang install` or edits of `mylang.json`.
+
 ## 1.1.0 — JSDoc Support and Code Readability Improvements
 
 - **Improved Code Readability:** Refined comments and formatting across core JavaScript modules while preserving the existing architecture, project structure, and file paths.

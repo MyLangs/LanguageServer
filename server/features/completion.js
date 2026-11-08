@@ -8,7 +8,8 @@ const lang = require("../data/language");
 const M = require("../core/modules");
 const { scopeAt, visibleSymbols } = require("../core/analyzer");
 const { formatParams } = require("../core/util");
-const { renderSymbol, renderStdMember, renderModule } = require("./render");
+const { renderSymbol, renderStdMember, renderModule, renderPackage } = require("./render");
+const { listInstalledPackages, isDeclaredDependency } = require("../core/packages");
 
 const Kind = {
   Method: 2,
@@ -118,6 +119,26 @@ function aliasIndex() {
   return map;
 }
 
+// ───────────────────────── installed packages (.module) ─────────────────────────
+
+/** Packages installed in `.module` folders visible from the document (nearest first). */
+function installedPackages(doc) {
+  try {
+    return listInstalledPackages(path.dirname(fileURLToPath(doc.uri))).map((pkg) => ({
+      pkg,
+      declared: isDeclaredDependency(path.dirname(fileURLToPath(doc.uri)), pkg.source),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function packageDetail(pkg, declared) {
+  return (
+    "package" + (pkg.version ? ` v${pkg.version}` : "") + (declared ? "" : " (not in dependencies)")
+  );
+}
+
 // ───────────────────────── import path completion ─────────────────────────
 
 /** Complete built-in imports or filesystem paths relative to the .ml file. */
@@ -177,6 +198,19 @@ function importPathItems(doc, entryTok, offset) {
       textEdit: { range, newText: name },
       filterText: name,
       sortText: "0" + name,
+    });
+  }
+  for (const { pkg, declared } of installedPackages(doc)) {
+    items.push({
+      label: pkg.source,
+      kind: Kind.Module,
+      detail: packageDetail(pkg, declared),
+      documentation: md(
+        renderPackage(pkg.source, { status: declared ? "ok" : "not-declared", pkg }),
+      ),
+      textEdit: { range, newText: pkg.source },
+      filterText: pkg.source,
+      sortText: "1" + pkg.source,
     });
   }
   items.push({
@@ -323,13 +357,23 @@ function complete(doc, offset, settings) {
     }));
   }
   if (prev && prev.type === "keyword" && prev.value === "import" && !wordMatch) {
-    return [...M.BUILTIN_MODULES].map((n) => ({
-      label: `"${n}"`,
-      kind: Kind.Module,
-      detail: "built-in module",
-      insertText: `"${n}";`,
-      sortText: "0" + n,
-    }));
+    return [...M.BUILTIN_MODULES]
+      .map((n) => ({
+        label: `"${n}"`,
+        kind: Kind.Module,
+        detail: "built-in module",
+        insertText: `"${n}";`,
+        sortText: "0" + n,
+      }))
+      .concat(
+        installedPackages(doc).map(({ pkg, declared }) => ({
+          label: `"${pkg.source}"`,
+          kind: Kind.Module,
+          detail: packageDetail(pkg, declared),
+          insertText: `"${pkg.source}";`,
+          sortText: "1" + pkg.source,
+        })),
+      );
   }
 
   // 5. general completion
@@ -430,7 +474,28 @@ function complete(doc, offset, settings) {
       });
     }
   }
+
+  // auto-import: installed packages that are listed in mylang.json
+  if (
+    settings.completion &&
+    settings.completion.autoImport !== false &&
+    wordMatch &&
+    wordMatch[0].length >= 1
+  ) {
+    for (const { pkg, declared } of installedPackages(doc)) {
+      if (!declared || seen.has(pkg.name)) continue;
+      add({
+        label: pkg.name,
+        kind: Kind.Module,
+        detail: `auto-import "${pkg.source}"`,
+        sortText: "4" + pkg.name,
+        documentation: md(renderPackage(pkg.source, { status: "ok", pkg })),
+        textEdit: { range, newText: pkg.name },
+        additionalTextEdits: [importEdit(analysis, lines, pkg.source)],
+      });
+    }
+  }
   return items;
 }
 
-module.exports = { complete, importEdit, aliasIndex, Kind };
+module.exports = { complete, importEdit, aliasIndex, installedPackages, Kind };
