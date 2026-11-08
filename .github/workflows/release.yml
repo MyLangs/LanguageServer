@@ -2,23 +2,22 @@
 name: Build and Release MyLang
 
 on:
-  push:
-    tags:
-      - "v*"
-
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Test, Build and Release
+    name: Test, Build and Upload VSIX
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,34 +32,31 @@ jobs:
         run: npm test
 
       - name: Verify version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "require('./package.json').version")
 
-          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
-            echo "::error::Tag version does not match package.json"
+          if [ "$RELEASE_TAG" != "v$VERSION" ]; then
+            echo "::error::Release tag must be v$VERSION"
             exit 1
           fi
 
-      - name: Package VSIX
-        shell: bash
+      - name: Build VSIX
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p dist
+
           npx --yes @vscode/vsce@4 package \
             --allow-missing-repository \
-            --out "dist/MyLang-${GITHUB_REF_NAME}.vsix"
+            --out "dist/MyLang-${RELEASE_TAG}.vsix"
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Upload VSIX to Release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/MyLang-${GITHUB_REF_NAME}.vsix" \
-            --title "MyLang $GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag \
-            --latest
+          gh release upload "$RELEASE_TAG" \
+            "dist/MyLang-${RELEASE_TAG}.vsix" \
+            --clobber
