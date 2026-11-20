@@ -214,7 +214,11 @@ function documentSymbols(doc) {
   const build = (sym) => {
     let children = [];
     if ((sym.kind === "struct" || sym.kind === "enum") && sym.members) {
-      children = [...sym.members.values()].map(build);
+      // `func [symbol.dispose]()` is a member of the struct like any other, and the
+      // outline is where you look to see which protocols a struct joins
+      children = [...sym.members.values(), ...(sym.symbolMemberList || [])]
+        .sort((a, b) => a.start - b.start)
+        .map(build);
     } else if (
       sym.kind === "variable" &&
       sym.type &&

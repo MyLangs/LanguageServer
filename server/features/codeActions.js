@@ -15,7 +15,7 @@ function rangeEq(a, b) {
 }
 
 /** Quick fixes for the diagnostics the server produced. */
-function codeActions(doc, range, context) {
+function codeActions(doc, range, context, settings) {
   const { analysis, lines, text, uri } = doc;
   const actions = [];
 
@@ -43,7 +43,7 @@ function codeActions(doc, range, context) {
               kind: "quickfix",
               diagnostics: [diag],
               isPreferred: mods.length === 1,
-              edit: { changes: { [uri]: [importEdit(analysis, lines, m)] } },
+              edit: { changes: { [uri]: [importEdit(analysis, lines, m, settings)] } },
             });
           }
         } else {
@@ -54,24 +54,40 @@ function codeActions(doc, range, context) {
         break;
       }
       case "unknown-member":
+      case "import-member-missing":
         if (data.suggestion)
           actions.push(replace(`Change to '${data.suggestion}'`, diag, data.suggestion, true));
         break;
       case "unknown-module":
+      case "unknown-core-module": {
+        const imp = analysis.imports.find((i) => i.tok.start <= start && i.tok.end >= start);
+        if (!imp) break;
+        const r = lines.range(imp.tok.start + 1, imp.tok.end - (imp.tok.terminated ? 1 : 0));
+        const rewrite = (title, source, preferred) => ({
+          title,
+          kind: "quickfix",
+          diagnostics: [diag],
+          isPreferred: !!preferred,
+          edit: { changes: { [uri]: [{ range: r, newText: source }] } },
+        });
         if (data.suggestion) {
-          const imp = analysis.imports.find((i) => i.tok.start <= start && i.tok.end >= start);
-          if (imp) {
-            const r = lines.range(imp.tok.start + 1, imp.tok.end - (imp.tok.terminated ? 1 : 0));
-            actions.push({
-              title: `Change to "${data.suggestion}"`,
-              kind: "quickfix",
-              diagnostics: [diag],
-              isPreferred: true,
-              edit: { changes: { [uri]: [{ range: r, newText: data.suggestion }] } },
-            });
-          }
+          const source =
+            diag.code === "unknown-core-module"
+              ? `${M.CORE_NAMESPACE}${data.suggestion}`
+              : data.suggestion;
+          actions.push(rewrite(`Change to "${source}"`, source, true));
         }
+        // a bare built-in is better written through the namespace
+        if (diag.code === "unknown-module" && M.BUILTIN_MODULES.has(imp.source))
+          actions.push(
+            rewrite(
+              `Change to "${M.CORE_NAMESPACE}${imp.source}"`,
+              `${M.CORE_NAMESPACE}${imp.source}`,
+              false,
+            ),
+          );
         break;
+      }
       case "unused": {
         const imp = analysis.imports.find(
           (i) =>
@@ -103,7 +119,6 @@ function codeActions(doc, range, context) {
     }
   }
   void range;
-  void M;
   return actions;
 }
 

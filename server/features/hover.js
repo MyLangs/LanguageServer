@@ -9,9 +9,10 @@ const {
   renderStdMember,
   renderModule,
   renderPackage,
+  renderImport,
   fence,
 } = require("./render");
-const { formatParams } = require("../core/util");
+const { formatParam, formatParams } = require("../core/util");
 const { parseJSDoc, parameterDoc, renderJSDoc } = require("../core/jsdoc");
 
 /**
@@ -89,17 +90,17 @@ function hover(doc, offset) {
   }
   if (tok.type === "string") {
     const entry = analysis.imports.find((i) => i.tok.start === tok.start);
-    if (entry && entry.builtin) {
-      return {
-        contents: { kind: "markdown", value: renderModule(entry.source) },
-        range: toRange(tok.start, tok.end),
-      };
-    }
-    if (entry && entry.kind === "package") {
-      return {
-        contents: { kind: "markdown", value: renderPackage(entry.source, entry.resolution) },
-        range: toRange(tok.start, tok.end),
-      };
+    if (entry) {
+      const markdown = entry.builtin
+        ? renderModule(entry.module || entry.source)
+        : entry.kind === "package"
+          ? renderPackage(entry.source, entry.resolution)
+          : renderImport({ ...entry, kind: entry.resolvedKind || entry.kind });
+      if (markdown)
+        return {
+          contents: { kind: "markdown", value: markdown },
+          range: toRange(tok.start, tok.end),
+        };
     }
   }
   return null;
@@ -169,7 +170,9 @@ function signatureHelp(doc, offset) {
     else if (documented?.default !== undefined) parts.push("Default: `" + documented.default + "`");
 
     return {
-      label: (param.rest ? "..." : "") + param.name + (param.optional ? "?" : ""),
+      // the label must be spelled exactly as in the signature, so the editor can
+      // highlight the active parameter by offset
+      label: formatParam(param),
       documentation: parts.length ? { kind: "markdown", value: parts.join(" — ") } : undefined,
     };
   });

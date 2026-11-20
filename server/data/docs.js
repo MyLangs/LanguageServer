@@ -178,20 +178,23 @@ coreio.print(alice.age);       // 18
   // ── modules ──
   import: {
     category: "module",
-    syntax: 'import "module";',
+    syntax: 'import "core:module";',
     description:
-      "Brings a module into scope. Standard libraries are imported by name; your own files, parent folders and even URLs by path. Several modules can be grouped in one statement, and an alias or a set of names can be picked with `as`.",
+      "Brings a module into scope. Modules that ship with the interpreter are imported by name, best through the `core:` namespace, which no project dependency can shadow; your own files, parent folders and even URLs by path. Several modules can be grouped in one statement, and an alias or a set of names can be picked with `as`.",
     example: ex(`
-import "coreio";                          // standard library
+import "core:coreio";                     // built-in, namespaced (recommended)
+import "coreio";                          // the bare form still works
 
 import (                                  // several at once
-  "strings",
-  "arrays"
+  "core:strings",
+  "core:arrays"
 );
 
-import "coreio" as { print, input };      // pick only what you need
+import "core:test" as { describe, test, assert, finish };
+import "core:net/http" as httpCore;       // binds under the chosen name
 import (helpers: "./utils/helpers.ml");   // alias for a local file
 import "../config.ml";                    // relative path
+import "Owner:repo";                      // installed package (.module)
 import "https://example.com/library.ml";  // remote module
 `),
     warning:
@@ -229,13 +232,13 @@ coreio.print(math.add(2, 3));   // 5
       "Attaches extra meaning to whatever is on its left:\n\n" +
       "- **Modifiers:** `as const`, `as readonly`, `as lazy`\n" +
       '- **Error details:** `throw "msg" as { ... }` or `as MyError`\n' +
-      '- **Import names:** `import "coreio" as { print, input }`',
+      '- **Import names:** `import "core:coreio" as { print, input }`',
     example: ex(`
 var limit = 100 as const;                    // can't be reassigned
 var prices = [10, 20] as readonly;           // can't be modified
 var report = buildReport() as lazy;          // built on first use
 
-import "coreio" as { print, input };         // pick names from a module
+import "core:coreio" as { print, input };         // pick names from a module
 
 throw "Not allowed" as { name: "AuthError", code: 403 };
 `),
@@ -622,7 +625,7 @@ coreio.print(first, second);
     category: "resource management",
     syntax: "defer expression;",
     description:
-      "Schedules an expression to run when the **enclosing function exits**, whichever way it exits (normal end, early `return`). Put the cleanup right next to the code that needs it, so you can't forget it. As an expression, `defer` can also wrap a value that has a `[symbol.dispose]` method for automatic cleanup.",
+      "Schedules an expression to run when the **enclosing function exits**, whichever way it exits (normal end, early `return`). Put the cleanup right next to the code that needs it, so you can't forget it. As an expression, `defer` can also wrap a value that has a `[symbol.dispose]` method for automatic cleanup.\n\nDeferred work runs in reverse order of registration, survives `break`, `continue`, `return` and a thrown error, and runs while a task is being cancelled; releasing a resource twice is not an error. Since **MyLang2 2.3** a struct declares its disposer in its own body: `func [symbol.dispose]() { ... }`.",
     example: ex(`
 func process() {
   var resource = openResource();
@@ -652,8 +655,28 @@ var config = defer readConfig("./package.json");
     category: "type",
     syntax: "struct Name { var field; func method() { ... } }",
     description:
-      "Declares a composite type with **fields** and **methods**. Inside methods, `this` is the current instance. Add an `init` method to set fields at creation. Create instances by calling the struct like a function; there is no `new`.",
+      "Declares a composite type with **fields** and **methods**. Inside methods, `this` is the current instance. Add an `init` method to set fields at creation. Create instances by calling the struct like a function; there is no `new`.\n\n" +
+      "A member may be `private` (reachable only from inside the struct) or `static` (belonging to the struct rather than to an instance); neither involves inheritance, which the language does not have.\n\n" +
+      "Since **MyLang2 2.3** a member may also be named after a protocol symbol — `func [symbol.dispose]() { ... }` and `func [symbol.iterator]() { ... }` — where before it had to be assigned in `init`. The brackets hold an expression evaluated once per instance, and it has to come out as one of the two protocol symbols. Such a member can be neither `private` nor `static`, and it has to be a method, not a field.",
     example: ex(`
+struct Report {
+  private var file;
+
+  func init(path) {
+    this.file = fs.open(path, "w");
+  }
+
+  // released by \`defer\`, and while a task is being cancelled
+  func [symbol.dispose]() {
+    this.file.close();
+  }
+}
+
+func write() {
+  var report = Report("out.txt");
+  defer report;          // [symbol.dispose] runs on the way out
+}
+
 struct BankAccount {
   var owner;
   var balance;
@@ -676,7 +699,7 @@ var account = BankAccount("John Doe", 1000);   // no \`new\` needed
 account.deposit(500);
 coreio.print(account.balance);                  // 1500
 `),
-    related: ["init", "this", "enum"],
+    related: ["init", "this", "enum", "defer"],
   },
 
   enum: {
@@ -834,10 +857,10 @@ coreio.print(length(func test(a, b) {})); // 2   parameters
     category: "global",
     syntax: "process",
     description:
-      'Information about the running program. `process.version` is the MyLang version and `process.nodejs.version` the Node.js version underneath. After `import "os/system"`, `system` is the same object.',
+      'Information about the running program. `process.version` is the MyLang version and `process.nodejs.version` the Node.js version underneath. After `import "core:os/system"`, `system` is the same object.',
     example: ex(`
-import "coreio";
-import "os/system";
+import "core:coreio";
+import "core:os/system";
 
 coreio.print(process.version);          // current MyLang version
 coreio.print(process.nodejs.version);   // current Node.js version
@@ -1066,7 +1089,12 @@ const LIBRARIES = [
     "environment, process info (nodejs, mylang2)",
   ],
   ["uuid", "uuid", "UUID generation", "V4, V1, custom UUIDs"],
-  ["iter", "iter", "Iterator patterns", "custom iterators, lazy evaluation"],
+  [
+    "iter",
+    "iter",
+    "Iterator patterns",
+    "map, filter, take, skip, toArray, forEach (lazy), custom iterables declaring `[symbol.iterator]`",
+  ],
   ["collections", "collections", "Data structures", "Set, Map, advanced collections"],
   ["http", "net/http", "HTTP functionality", "client, server, middleware"],
   ["url", "net/url", "URL parsing", "parse, build, manipulate URLs"],
@@ -1079,48 +1107,72 @@ const LIBRARIES = [
   ["time", "time", "Time and date operations", "formatting, parsing, calculations"],
   ["numbers", "numbers", "Numeric operations", "math functions, conversions"],
   ["bigint", "numbers/bigint", "Big integer arithmetic", "large number calculations"],
+  ["utils", "utils", "Small helpers", "type checks, formatting, misc"],
+  ["json", "json", "JSON encoding", "parse, stringify, pretty printing"],
+  ["crypto", "crypto", "Cryptography", "hashes, HMAC, random keys, ciphers"],
+  // added in MyLang 2.2
+  ["test", "test", "Built-in test framework", "describe, test, assert, finish"],
+  ["binary", "binary", "Structured binary data", "readers, writers, endianness"],
+  ["validation", "validation", "Value validation", "schemas, check, parse"],
+  ["compress", "compress", "Compression", "gzip, deflate, brotli"],
+  ["archive", "archive", "Archives", "tar, zip, extract, create"],
+  ["dns", "dns", "Name resolution", "lookup, records, reverse"],
+  ["tcp", "tcp", "TCP sockets", "connect, listen, read, write"],
+  ["udp", "udp", "UDP sockets", "open, send, receive, multicast"],
+  ["ws", "ws", "WebSockets", "connect, listen, send, receive"],
+  ["workers", "workers", "Worker threads", "start, post, receive, result"],
+  ["process", "process", "Child processes", "run, spawn, permissions"],
 ];
 
 const LIB_EXAMPLES = {
   coreio: ex(`
-import "coreio";
+import "core:coreio";
 
 coreio.print("Hello, MyLang2!");
 var answer = coreio.input("Your name? ");
 `),
   fs: ex(`
-import "fs";
+import "core:fs";
 
 fs.writeFile("hello.txt", "Hi!");
 var text = fs.readFile("hello.txt", "utf8");
 `),
   strings: ex(`
-import "strings";
+import "core:strings";
 
 var parts = strings.split("a,b,c", ",");
 coreio.print(strings.trim("  hi  "));
 `),
   arrays: ex(`
-import "arrays";
+import "core:arrays";
 
 var upper = arrays.map(["a", "b"], func(s) { return s + "!"; });
 `),
   time: ex(`
-import "time";
+import "core:time";
 
 time.sleep(1000);   // pause for one second
 `),
   http: ex(`
-import "net/http";
+import "core:net/http";
 
 var server = http.Server();
 server.get("/", func(ctx) { return ctx.send("Hello!"); });
 server.listen(3000);
 `),
   system: ex(`
-import "os/system";
+import "core:os/system";
 
 coreio.print(system == process);   // true
+`),
+  iter: ex(`
+import "core:iter";
+
+// functions take the sequence first, like everything else in the language
+var first3 = iter.toArray(iter.take(iter.map([1, 2, 3, 4], double), 3));
+
+// a struct that declares [symbol.iterator] is a sequence like any other (2.3)
+iter.forEach(report, func(line) { coreio.print(line); });
 `),
 };
 
@@ -1129,9 +1181,9 @@ for (const [word, module, purpose, features] of LIBRARIES) {
   LIB_DOCS[word] = {
     module,
     category: "standard library",
-    syntax: `import "${module}";`,
+    syntax: `import "core:${module}";`,
     description: `**${purpose}.** Covers: ${features}.`,
-    example: LIB_EXAMPLES[word] || `import "${module}";`,
+    example: LIB_EXAMPLES[word] || `import "core:${module}";`,
   };
 }
 

@@ -9,6 +9,33 @@
     "body": ["func ${1:name}(${2}) {", "\t$0", "}"],
     "description": "function declaration"
   },
+  "dispose member": {
+    "prefix": "dispose",
+    "body": ["func [symbol.dispose]() {", "\t$0", "}"],
+    "description": "struct member released by defer (MyLang2 2.3)"
+  },
+  "iterator member": {
+    "prefix": "iterator",
+    "body": ["func [symbol.iterator]() {", "\treturn ${1:iter.Iterator(this.${2:items})};", "}"],
+    "description": "struct member walked by `for … in` (MyLang2 2.3)"
+  },
+  "struct resource": {
+    "prefix": "structresource",
+    "body": [
+      "struct ${1:Resource} {",
+      "\tprivate var ${2:handle};",
+      "",
+      "\tfunc init(${3}) {",
+      "\t\tthis.${2:handle} = ${4:nil};",
+      "\t}",
+      "",
+      "\tfunc [symbol.dispose]() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "struct that owns a resource and releases it (MyLang2 2.3)"
+  },
   "struct": {
     "prefix": "struct",
     "body": [
@@ -78,12 +105,12 @@
   },
   "import": {
     "prefix": "import",
-    "body": ["import \"${1:coreio}\";"],
+    "body": ["import \"core:${1:coreio}\";"],
     "description": "import a module"
   },
   "importmany": {
     "prefix": "importmany",
-    "body": ["import (", "\t\"${1:coreio}\",", "\t\"${2:fs}\",", ");"],
+    "body": ["import (", "\t\"core:${1:coreio}\",", "\t\"core:${2:fs}\",", ");"],
     "description": "import several modules"
   },
   "export": {
@@ -103,23 +130,27 @@
   },
   "main": {
     "prefix": "main",
-    "body": ["import \"coreio\";", "", "coreio.print(\"${1:Hello, MyLang2!}\");", ""],
+    "body": ["import \"core:coreio\";", "", "coreio.print(\"${1:Hello, MyLang2!}\");", ""],
     "description": "hello world"
   },
   "print": {
     "prefix": "print",
     "body": ["coreio.print($0);"],
-    "description": "print to console (needs import \"coreio\")"
+    "description": "print to console (needs import \"core:coreio\")"
   },
   "http server": {
     "prefix": "httpserver",
     "body": [
       "import (",
-      "\t\"coreio\",",
-      "\t\"net/http\",",
+      "\t\"core:coreio\",",
+      "\t\"core:net/http\",",
       ");",
       "",
-      "var server = http.Server();",
+      "var server = http.Server({",
+      "\tonError: func(event) {",
+      "\t\tcoreio.print($\"{event.kind} {event.status} {event.method} {event.path}: {event.message}\");",
+      "\t},",
+      "});",
       "",
       "server.get(\"/\", func(ctx) {",
       "\treturn ctx.send(\"${1:Hello}\");",
@@ -130,5 +161,43 @@
       "});"
     ],
     "description": "HTTP server skeleton"
+  },
+  "importas": {
+    "prefix": "importas",
+    "body": ["import \"core:${1:test}\" as { ${2:describe, test, assert, finish} };"],
+    "description": "import selected members of a module"
+  },
+  "test file": {
+    "prefix": "testfile",
+    "body": [
+      "import \"core:test\" as { describe, test, assert, finish };",
+      "",
+      "describe(\"${1:unit}\", func() {",
+      "\ttest(\"${2:does something}\", func() {",
+      "\t\tassert.equal(${3:actual}, ${4:expected});",
+      "\t});",
+      "});",
+      "",
+      "finish(\"${1:unit}\");"
+    ],
+    "description": "test file skeleton (core:test)"
+  },
+  "tcp server": {
+    "prefix": "tcpserver",
+    "body": [
+      "import (",
+      "\t\"core:coreio\",",
+      "\t\"core:tcp\",",
+      ");",
+      "",
+      "var server = defer tcp.listen(${1:8080});",
+      "",
+      "server.accept(func(client) {",
+      "\tdefer client.close();",
+      "\tcoreio.print(client.read());",
+      "\tclient.write(\"${2:hello}\\n\");",
+      "});"
+    ],
+    "description": "TCP server skeleton (core:tcp)"
   }
 }

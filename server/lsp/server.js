@@ -17,6 +17,8 @@ const nav = require("../features/navigation");
 const { computeDiagnostics } = require("../features/diagnostics");
 const { semanticTokens, legend } = require("../features/semantic");
 const { codeActions } = require("../features/codeActions");
+const { formatDocument } = require("../features/formatting");
+const { formatterStatus, loadFormatter } = require("../core/formatter");
 
 const DEFAULT_SETTINGS = {
   compiler: { path: "" },
@@ -25,15 +27,53 @@ const DEFAULT_SETTINGS = {
     unresolved: "warning",
     unknownMembers: "warning",
     unknownModules: "warning",
+    deprecated: "warning",
     unused: "hint",
     maxProblems: 200,
   },
-  completion: { autoImport: true },
+  completion: { autoImport: true, coreNamespace: true },
+  format: { enable: true, configFile: "", options: {} },
   globals: [],
   trace: "off",
 };
 
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "out", ".vscode"]);
+
+/** Editor type of a value read from an imported JSON document. */
+function jsonType(value) {
+  if (value === null) return { kind: "primitive", name: "nil" };
+  if (Array.isArray(value)) {
+    const elements = value.map(jsonType);
+    return { kind: "array", element: elements.length ? M.unifyTypes(elements) : null };
+  }
+  switch (typeof value) {
+    case "string":
+      return { kind: "primitive", name: "string" };
+    case "number":
+      return { kind: "primitive", name: Number.isInteger(value) ? "int" : "float" };
+    case "boolean":
+      return { kind: "primitive", name: "bool" };
+    case "object": {
+      const members = new Map();
+      for (const [key, inner] of Object.entries(value)) {
+        members.set(key, {
+          name: key,
+          kind: "property",
+          mods: {},
+          refs: [],
+          members: null,
+          params: null,
+          doc: "",
+          type: jsonType(inner),
+          json: true,
+        });
+      }
+      return { kind: "object", members, symbol: null };
+    }
+    default:
+      return null;
+  }
+}
 
 /** Coordinates documents, workspace indexes and requests over JSON-RPC/LSP. */
 class Server {
@@ -171,9 +211,13 @@ class Server {
         return this.withDoc(params, (d) => nav.foldingRanges(d), true);
       case "textDocument/semanticTokens/full":
         return this.withDoc(params, (d) => semanticTokens(d), true);
+      case "textDocument/formatting":
+        return this.format(params, null);
+      case "textDocument/rangeFormatting":
+        return this.format(params, params.range);
       case "textDocument/codeAction": {
         const d = this.getDoc(params.textDocument.uri);
-        return d ? codeActions(d, params.range, params.context) : [];
+        return d ? codeActions(d, params.range, params.context, this.settings) : [];
       }
       case "mylang/status":
         return this.status();
@@ -224,6 +268,8 @@ class Server {
         documentLinkProvider: { resolveProvider: false },
         foldingRangeProvider: true,
         codeActionProvider: { codeActionKinds: ["quickfix"] },
+        documentFormattingProvider: true,
+        documentRangeFormattingProvider: true,
         semanticTokensProvider: { legend, full: true },
         workspace: { workspaceFolders: { supported: true, changeNotifications: true } },
       },
@@ -272,7 +318,10 @@ class Server {
     this.settings = merge(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), incoming);
     // settings changed: previously analysed documents may resolve differently
     for (const d of this.docs.values()) d.analysis = null;
+    // a setting may be exactly what fixes a problem already reported
+    this.warned = new Set();
     loadCompiler(this.workspaceFolders, this.settings.compiler.path);
+    loadFormatter(this.workspaceFolders, this.settings.compiler.path);
   }
 
   uriToPath(uri) {
@@ -285,12 +334,56 @@ class Server {
 
   status() {
     loadCompiler(this.workspaceFolders, this.settings.compiler.path);
+    loadFormatter(this.workspaceFolders, this.settings.compiler.path);
     return {
       compiler: compilerStatus(),
+      formatter: formatterStatus(),
       documents: this.docs.size,
       indexedFiles: this.disk.size,
       stdlib: M.stdlib.generatedFrom,
     };
+  }
+
+  // ───────────────────────── formatting ─────────────────────────
+
+  /**
+   * "Format Document" and "Format Selection", both run through the language's own
+   * formatter so the editor and `mylang prettier` can never disagree.
+   *
+   * A formatter that is missing, switched off or unable to read the project's settings
+   * is reported once per reason rather than on every keystroke: format-on-save would
+   * otherwise repeat the same message on every save.
+   */
+  format(params, range) {
+    const d = this.getDoc(params.textDocument.uri);
+    if (!d) return null;
+
+    const result = formatDocument(
+      d,
+      this.settings,
+      { workspaceFolders: this.workspaceFolders },
+      {
+        lspOptions: params.options || {},
+        range,
+      },
+    );
+
+    if (result.error) {
+      if (result.syntax) this.log(result.error);
+      else this.warnOnce(`format:${result.error}`, result.error);
+    }
+    return result.edits;
+  }
+
+  /** A warning the user sees once; the same text again is only logged. */
+  warnOnce(key, message) {
+    this.warned = this.warned || new Set();
+    if (this.warned.has(key)) {
+      this.log(message);
+      return;
+    }
+    this.warned.add(key);
+    this.notify("window/showMessage", { type: 2, message: `MyLang: ${message}` });
   }
 
   // ───────────────────────── documents ─────────────────────────
@@ -316,34 +409,80 @@ class Server {
     this.enrichImports(d);
   }
 
-  /** Gives `import "./utils.ml"` namespaces the exported members of the target file. */
+  /**
+   * Resolves every import of a document against the file system:
+   *  - `import "./utils.ml"` namespaces get the exported members of the target file
+   *  - `import "./data.json"` gets the keys of the JSON document
+   *  - `import "Owner:repo"` gets its installation status and package info
+   * The result is what hover, completion and the import diagnostics work from.
+   */
   enrichImports(d) {
+    let dir = null;
+    try {
+      dir = path.dirname(fileURLToPath(d.uri));
+    } catch {
+      dir = null;
+    }
+
     for (const imp of d.analysis.imports) {
-      let dir = null;
       if (imp.kind === "package") {
-        try {
-          dir = path.dirname(fileURLToPath(d.uri));
-        } catch {
-          dir = null;
-        }
         // status + package info drive diagnostics, hover and completion
         imp.resolution = dir ? resolvePackage(dir, imp.source) : null;
       }
-      if (imp.kind !== "file" && imp.kind !== "package") continue;
+      if (imp.kind !== "file" && imp.kind !== "package" && imp.kind !== "json") continue;
+
+      const file = nav.resolveImportFile(d.uri, imp.source);
+      imp.lookedUp = !!dir;
+      imp.resolvedPath = file && dir ? path.relative(dir, file).replace(/\\/g, "/") : file || null;
+      const members = file ? this.exportedMembers(d, file) : null;
+      if (members) imp.members = members;
+
       for (const sym of imp.symbols) {
         if (!sym.type || sym.type.kind !== "file") continue;
         if (imp.resolution && imp.resolution.pkg) sym.type.info = imp.resolution.pkg;
-        const file = nav.resolveImportFile(d.uri, imp.source);
-        if (!file || !file.endsWith(".ml")) continue;
-        const target = this.getDoc(pathToFileURL(file).toString());
-        if (!target || target === d) continue;
-        const members = new Map();
-        for (const ex of target.analysis.exports) {
-          const sym2 = ex.ref && ex.ref.symbol;
-          if (sym2) members.set(ex.name, sym2);
-        }
-        sym.type.members = members;
+        if (members) sym.type.members = members;
       }
+    }
+  }
+
+  /** Members a resolved import exposes: exports of a `.ml` file, keys of a `.json` file. */
+  exportedMembers(from, file) {
+    if (file.endsWith(".json")) return this.jsonMembers(file);
+    if (!file.endsWith(".ml")) return null;
+    const target = this.getDoc(pathToFileURL(file).toString());
+    if (!target || target === from) return null;
+    const members = new Map();
+    for (const ex of target.analysis.exports) {
+      const sym = ex.ref && ex.ref.symbol;
+      if (sym) members.set(ex.name, sym);
+    }
+    return members;
+  }
+
+  /** Top-level keys of an imported JSON document, as symbols completion understands. */
+  jsonMembers(file) {
+    try {
+      // a data file can be arbitrarily large; the editor only needs small ones
+      if (fs.statSync(file).size > 512 * 1024) return null;
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+      const members = new Map();
+      for (const [key, value] of Object.entries(data)) {
+        members.set(key, {
+          name: key,
+          kind: "property",
+          mods: {},
+          refs: [],
+          members: null,
+          params: null,
+          doc: `\`${key}\` of ${path.basename(file)}`,
+          type: jsonType(value),
+          json: true,
+        });
+      }
+      return members;
+    } catch {
+      return null;
     }
   }
 
@@ -441,6 +580,8 @@ class Server {
   onWatchedFiles(params) {
     for (const ch of params.changes || []) {
       this.disk.delete(ch.uri);
+      // an edited mylang.json may be the fix for a formatter setting already complained about
+      if (ch.uri.endsWith("/mylang.json")) this.warned = new Set();
     }
     this.indexWorkspace();
     // `mylang install` / edits of mylang.json or .module change what imports resolve to

@@ -109,106 +109,47 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.interpolated.triple.mylang",
+          "begin": "\\$\"\"\"",
+          "end": "\"\"\"",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.mylang" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.mylang" } },
+          "patterns": [{ "include": "#escapes" }, { "include": "#interpolation" }]
+        },
+        {
           "name": "string.quoted.triple.mylang",
           "begin": "\"\"\"",
           "end": "\"\"\"",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.begin.mylang"
-            }
-          },
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.end.mylang"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#escapes"
-            }
-          ]
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.mylang" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.mylang" } },
+          "patterns": [{ "include": "#escapes" }]
         },
         {
           "name": "string.interpolated.mylang",
           "begin": "\\$\"",
           "end": "\"",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.begin.mylang"
-            }
-          },
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.end.mylang"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#escapes"
-            },
-            {
-              "name": "meta.interpolation.mylang",
-              "begin": "\\{",
-              "end": "\\}",
-              "beginCaptures": {
-                "0": {
-                  "name": "punctuation.section.interpolation.begin.mylang"
-                }
-              },
-              "endCaptures": {
-                "0": {
-                  "name": "punctuation.section.interpolation.end.mylang"
-                }
-              },
-              "patterns": [
-                {
-                  "include": "#statements"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "name": "string.quoted.double.mylang",
-          "begin": "\"",
-          "end": "\"|(?=$)",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.begin.mylang"
-            }
-          },
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.end.mylang"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#escapes"
-            }
-          ]
-        },
-        {
-          "name": "string.quoted.single.mylang",
-          "begin": "'",
-          "end": "'|(?=$)",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.begin.mylang"
-            }
-          },
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.string.end.mylang"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#escapes"
-            }
-          ]
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.mylang" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.mylang" } },
+          "patterns": [{ "include": "#escapes" }, { "include": "#interpolation" }]
         }
       ]
+    },
+    "interpolation": {
+      "name": "meta.interpolation.mylang",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.mylang" } },
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.mylang" } },
+      "patterns": [{ "include": "#escaped-string" }, { "include": "#statements" }]
+    },
+    "escaped-string": {
+      "comment": "string written as \\\"...\\\" inside {} of an interpolated string",
+      "name": "string.quoted.double.escaped.mylang",
+      "begin": "\\\\\"",
+      "end": "\\\\\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.mylang" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.mylang" } },
+      "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.mylang" }]
     },
     "numbers": {
       "patterns": [
@@ -240,6 +181,39 @@
     },
     "declarations": {
       "patterns": [
+        {
+          "comment": "func [symbol.dispose]() - a member named after a protocol symbol (2.3)",
+          "match": "\\b(func)\\s*(\\[)\\s*(symbol)\\s*(\\.)\\s*(dispose|iterator)\\s*(\\])\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.mylang"
+            },
+            "2": {
+              "name": "punctuation.definition.member.begin.mylang"
+            },
+            "3": {
+              "name": "support.variable.symbol.mylang"
+            },
+            "4": {
+              "name": "punctuation.accessor.mylang"
+            },
+            "5": {
+              "name": "entity.name.function.protocol.mylang"
+            },
+            "6": {
+              "name": "punctuation.definition.member.end.mylang"
+            }
+          }
+        },
+        {
+          "comment": "func [<expression>]() - any other computed member name",
+          "match": "\\b(func)\\s*(?=\\[)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.mylang"
+            }
+          }
+        },
         {
           "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
           "captures": {

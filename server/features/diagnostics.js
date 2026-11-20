@@ -1,6 +1,7 @@
 "use strict";
 
 const { checkSyntax } = require("../core/compiler");
+const { closest } = require("../core/util");
 
 const Severity = { Error: 1, Warning: 2, Information: 3, Hint: 4 };
 const SEVERITY_BY_NAME = {
@@ -29,11 +30,36 @@ function messageFor(issue) {
       return (
         `Unknown module '${d.source}'` + (d.suggestion ? `. Did you mean '${d.suggestion}'?` : "")
       );
+    case "unknown-core-module":
+      return (
+        `'core:' names a built-in module, and '${d.name}' is not one` +
+        (d.suggestion ? `. Did you mean 'core:${d.suggestion}'?` : "")
+      );
     case "unknown-member":
       return (
         `Module '${d.module}' has no member '${d.name}'` +
         (d.suggestion ? `. Did you mean '${d.suggestion}'?` : "")
       );
+    case "duplicate-modifier":
+      return `Duplicate '${d.modifier}' modifier`;
+    case "enum-member-assign":
+      return `Cannot assign to '${d.owner ? d.owner + "." : ""}${d.name}' because an enum member is a constant`;
+    case "symbol-member-modifier":
+      return (
+        `A symbol member cannot be '${d.modifier}'. ` +
+        (d.modifier === "private"
+          ? "A symbol is not a name 'private' could hide"
+          : "A protocol belongs to the instance, not to the type")
+      );
+    case "symbol-member-field":
+      return `'[${d.source}]' must be a method, not a field: write 'func [${d.source}]() { … }'`;
+    case "symbol-member-unknown":
+      return (
+        `'${d.source}' is not a protocol symbol. ` +
+        "A bracketed member has to name 'symbol.dispose' or 'symbol.iterator'"
+      );
+    case "symbol-member-duplicate":
+      return `'symbol.${d.protocol}' is already declared in this struct`;
     case "unused":
       return d.writeOnly
         ? `'${d.name}' is assigned but never read`
@@ -43,6 +69,18 @@ function messageFor(issue) {
     default:
       return issue.code;
   }
+}
+
+/** `@deprecated` text of a member, whether it comes from user code or the stdlib. */
+function deprecationOf(member) {
+  if (!member) return null;
+  if (member.origin === "user") {
+    const note = member.symbol && member.symbol.jsdoc && member.symbol.jsdoc.deprecated;
+    return note == null ? null : note;
+  }
+  const doc = member.doc || "";
+  const match = /@deprecated\s*([^\n]*)/.exec(doc);
+  return match ? match[1].trim() || "This API is deprecated." : null;
 }
 
 function packageMessage(source, r) {
@@ -149,10 +187,18 @@ function computeDiagnostics(doc, settings, env) {
     unresolved: level("unresolved", "warning"),
     "unknown-member": level("unknownMembers", "warning"),
     "unknown-module": level("unknownModules", "warning"),
+    "unknown-core-module": level("unknownModules", "warning"),
     unused: level("unused", "hint"),
     duplicate: Severity.Error,
     "const-assign": Severity.Error,
     "readonly-modify": Severity.Error,
+    "enum-member-assign": Severity.Error,
+    "duplicate-modifier": Severity.Error,
+    // every one of these is refused by the parser or at instantiation (MyLang2 2.3)
+    "symbol-member-modifier": Severity.Error,
+    "symbol-member-field": Severity.Error,
+    "symbol-member-unknown": Severity.Error,
+    "symbol-member-duplicate": Severity.Error,
   };
   for (const issue of analysis.issues) {
     let s = sev[issue.code];
@@ -176,20 +222,82 @@ function computeDiagnostics(doc, settings, env) {
     out.push(diag);
   }
 
-  // 3. package imports: declared in mylang.json? installed in .module? entry file present?
+  // 3. imports resolved against the file system: packages, files, JSON, and the names
+  //    a destructuring import takes out of them
   const moduleSeverity = level("unknownModules", "warning");
-  if (moduleSeverity != null && !(syntax && syntax.length)) {
+  const memberSeverity = level("unknownMembers", "warning");
+  if (!(syntax && syntax.length)) {
     for (const imp of analysis.imports) {
-      const r = imp.resolution;
-      if (imp.kind !== "package" || !r || r.status === "ok") continue;
-      const code = `package-${r.status}`;
+      if (moduleSeverity != null && imp.kind === "package") {
+        const r = imp.resolution;
+        if (r && r.status !== "ok")
+          out.push({
+            range: lines.range(imp.tok.start, imp.tok.end),
+            severity: moduleSeverity,
+            source: "mylang",
+            code: `package-${r.status}`,
+            message: packageMessage(imp.source, r),
+          });
+      }
+
+      // `import "./helpers.ml"` / `import "./data.json"` that points at nothing
+      if (
+        moduleSeverity != null &&
+        imp.lookedUp &&
+        !imp.resolvedPath &&
+        (imp.kind === "file" || imp.kind === "json")
+      ) {
+        out.push({
+          range: lines.range(imp.tok.start, imp.tok.end),
+          severity: moduleSeverity,
+          source: "mylang",
+          code: "module-not-found",
+          message: `Cannot find '${imp.source}' relative to this file`,
+        });
+      }
+
+      // `import "./math.ml" as { add }` - is `add` really exported?
+      if (memberSeverity != null && imp.destructured && imp.members && imp.members.size) {
+        const available = [...imp.members.keys()];
+        for (const name of imp.destructured) {
+          if (imp.members.has(name.name)) continue;
+          const suggestion = closest(name.name, available);
+          out.push({
+            range: lines.range(name.start, name.end),
+            severity: memberSeverity,
+            source: "mylang",
+            code: "import-member-missing",
+            message:
+              `'${imp.source}' does not export '${name.name}'` +
+              (suggestion ? `. Did you mean '${suggestion}'?` : ""),
+            data: suggestion ? { suggestion, name: name.name } : undefined,
+          });
+        }
+      }
+    }
+  }
+
+  // 4. uses of APIs marked `@deprecated`, in user code and in the standard library
+  const deprecatedSeverity = level("deprecated", "warning");
+  if (deprecatedSeverity != null) {
+    const report = (ref, note) =>
       out.push({
-        range: lines.range(imp.tok.start, imp.tok.end),
-        severity: moduleSeverity,
+        range: lines.range(ref.start, ref.end),
+        severity: deprecatedSeverity,
         source: "mylang",
-        code,
-        message: packageMessage(imp.source, r),
+        code: "deprecated",
+        message: `'${ref.name}' is deprecated. ${note}`.trim(),
+        tags: [2], // LSP DiagnosticTag.Deprecated
       });
+
+    for (const ref of analysis.memberRefs) {
+      const note = deprecationOf(ref.member);
+      if (note) report(ref, note);
+    }
+    for (const ref of analysis.refs) {
+      if (ref.exported || !ref.symbol) continue;
+      const note = ref.symbol.jsdoc && ref.symbol.jsdoc.deprecated;
+      if (note != null) report(ref, note);
     }
   }
 

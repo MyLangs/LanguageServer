@@ -216,9 +216,43 @@ function readString(text, i, tokens) {
     return end;
   };
 
-  // interpolated string
+  const isTriple = (p) => text[p] === '"' && text[p + 1] === '"' && text[p + 2] === '"';
+
+  const scanExpr = (from, allowNewlineInStrings) => {
+    let depth = 1;
+    let k = from;
+    while (k < n) {
+      const d = text[k];
+      if (d === "\\") {
+        k += 2;
+        continue;
+      } // \" \{ и т.п. — пропускаем целиком
+      if (d === '"' || d === "'") {
+        k++;
+        while (k < n && text[k] !== d) {
+          if (text[k] === "\\") {
+            k += 2;
+            continue;
+          }
+          if (text[k] === "\n" && !allowNewlineInStrings) break;
+          k++;
+        }
+        k++;
+        continue;
+      }
+      if (d === "{") depth++;
+      else if (d === "}") {
+        depth--;
+        if (depth === 0) return k;
+      }
+      k++;
+    }
+    return n;
+  };
+
   if (text[i] === "$") {
-    let j = i + 2;
+    const triple = isTriple(i + 1);
+    let j = i + (triple ? 4 : 2);
     const exprs = [];
     while (j < n) {
       const ch = text[j];
@@ -226,24 +260,12 @@ function readString(text, i, tokens) {
         j += 2;
         continue;
       }
-      if (ch === '"') return finish(j + 1, "interp", true, exprs);
+      if (triple ? isTriple(j) : ch === '"') {
+        return finish(j + (triple ? 3 : 1), "interp", true, exprs);
+      }
       if (ch === "{") {
         const bodyStart = j + 1;
-        let depth = 1;
-        let k = bodyStart;
-        while (k < n && depth > 0) {
-          const d = text[k];
-          if (d === '"' || d === "'") {
-            // nested string inside the expression
-            k++;
-            while (k < n && text[k] !== d && text[k] !== "\n") k += text[k] === "\\" ? 2 : 1;
-            k++;
-            continue;
-          }
-          if (d === "{") depth++;
-          else if (d === "}") depth--;
-          if (depth > 0) k++;
-        }
+        const k = scanExpr(bodyStart, triple);
         exprs.push({ start: bodyStart, end: Math.min(k, n) });
         j = k + 1;
         continue;
@@ -255,23 +277,19 @@ function readString(text, i, tokens) {
 
   const quote = text[i];
 
-  // triple-quoted block  """ ... """
-  if (quote === '"' && text[i + 1] === '"' && text[i + 2] === '"') {
+  if (isTriple(i)) {
     let j = i + 3;
     while (j < n) {
       if (text[j] === "\\") {
         j += 2;
         continue;
       }
-      if (text[j] === '"' && text[j + 1] === '"' && text[j + 2] === '"') {
-        return finish(j + 3, "triple", true);
-      }
+      if (isTriple(j)) return finish(j + 3, "triple", true);
       j++;
     }
     return finish(n, "triple", false);
   }
 
-  // normal single-line string
   let j = i + 1;
   while (j < n) {
     const ch = text[j];
@@ -280,7 +298,7 @@ function readString(text, i, tokens) {
       continue;
     }
     if (ch === quote) return finish(j + 1, "single", true);
-    if (ch === "\n") return finish(j, "single", false); // unterminated: stops at EOL
+    if (ch === "\n") return finish(j, "single", false);
     j++;
   }
   return finish(Math.min(j, n), "single", false);

@@ -140,6 +140,7 @@ class Analyzer {
     this.exports = [];
     this.issues = [];
     this.mutations = [];
+    this.fieldAssignments = [];
     this.fnStack = [];
     this.declCtx = null;
     this.argHint = null;
@@ -444,6 +445,22 @@ class Analyzer {
     const doc = this.docFor(varTok);
     const declared = [];
 
+    // `var [symbol.dispose] = ...`: a protocol belongs to a method, never to a field
+    if (ctx.kind === "field" && this.isPunct("[")) {
+      const key = this.parseSymbolKey();
+      this.issues.push({
+        code: "symbol-member-field",
+        start: key.start,
+        end: key.end,
+        data: { source: key.source },
+      });
+      if (this.isOp("=")) {
+        this.next();
+        this.parseExpr();
+      }
+      return declared;
+    }
+
     if (this.isPunct("(")) {
       this.next();
       while (!this.eof && !this.isPunct(")")) {
@@ -495,6 +512,7 @@ class Analyzer {
         start: varTok.start,
         end: nameTok.end,
         doc,
+        mods: { ...(ctx.mods || {}) },
         parent: ctx.owner || null,
         isMember: ctx.kind === "field",
       });
@@ -537,6 +555,13 @@ class Analyzer {
       if (made.length === 1 && info && info.type) {
         made[0].type = info.type;
         if (info.type.kind === "object" && !info.type.symbol) info.type.symbol = made[0];
+      }
+      if (made.length === 1 && info) {
+        // `b` may be declared further down the file, and `a.b` may only get its type
+        // once the owner's fields are known
+        if (info._ref) made[0].deferRef = info._ref;
+        if (info.memberRef) made[0].deferMemberRef = info.memberRef;
+        if (info.calleeSymbol) made[0].deferCallee = info.calleeSymbol;
       }
     }
   }
@@ -599,7 +624,11 @@ class Analyzer {
     const funcTok = this.next(); // func
     const doc = this.docFor(funcTok);
     let nameTok = null;
-    if (this.peek().type === "ident" && this.isPunct("(", 1)) nameTok = this.next();
+    // `func [symbol.dispose]() { ... }`: a member named after a protocol symbol
+    const symbolKey = opts.owner && this.isPunct("[") ? this.parseSymbolKey() : null;
+    if (symbolKey) {
+      /* the brackets are the name */
+    } else if (this.peek().type === "ident" && this.isPunct("(", 1)) nameTok = this.next();
     else if (opts.owner && this.isWordToken(this.peek()) && this.isPunct("(", 1))
       nameTok = this.next();
 
@@ -609,7 +638,22 @@ class Analyzer {
     this.argHint = null;
 
     let sym = null;
-    if (nameTok && (opts.declaration || opts.owner)) {
+    if (symbolKey) {
+      sym = this.declare(null, {
+        name: `[${symbolKey.source}]`,
+        kind: "method",
+        start: funcTok.start,
+        end: symbolKey.end,
+        doc,
+        mods: opts.mods || {},
+        parent: opts.owner,
+        isMember: true,
+      });
+      sym.nameStart = symbolKey.start;
+      sym.nameEnd = symbolKey.end;
+      sym.symbolKey = symbolKey;
+      this.registerSymbolMember(opts.owner, sym, symbolKey, opts.modTok);
+    } else if (nameTok && (opts.declaration || opts.owner)) {
       const kind = opts.owner ? "method" : "function";
       sym = this.declare(opts.owner ? null : this.scope, {
         name: nameTok.value,
@@ -617,6 +661,7 @@ class Analyzer {
         nameTok,
         start: funcTok.start,
         doc,
+        mods: opts.mods || {},
         parent: opts.owner || null,
         isMember: !!opts.owner,
       });
@@ -678,6 +723,9 @@ class Analyzer {
             psym.doc = documentedParam.description;
             psym.jsdoc = parseJSDoc(documentedParam.description);
             psym.jsdoc.type = documentedParam.type;
+            // a documented type also belongs in the signature the editor shows
+            if (documentedParam.type) param.type = documentedParam.type;
+            if (documentedParam.optional) param.optional = true;
           }
           if (this.isOp("=")) {
             const eq = this.next();
@@ -723,6 +771,113 @@ class Analyzer {
 
   // ───────────────────────── struct / enum ─────────────────────────
 
+  /**
+   * The `private` / `static` modifiers that open a struct member (MyLang2 2.2).
+   *
+   * Both are ordinary identifiers everywhere else in the language, so they only count
+   * here, and only when a member declaration really follows: `private` on its own is a
+   * name like any other, and reading it as a modifier would swallow the line.
+   *
+   * @returns {{mods: object, modTok: object|null}} the first modifier token, for the
+   *   diagnostics that have to point at it.
+   */
+  structModifiers() {
+    const mods = {};
+    let modTok = null;
+    for (;;) {
+      const tok = this.peek();
+      if (tok.type !== "ident" || (tok.value !== "private" && tok.value !== "static")) break;
+      const next = this.peek(1);
+      const opensMember =
+        this.isKw("var", 1) ||
+        this.isKw("func", 1) ||
+        (next.type === "ident" && (next.value === "private" || next.value === "static"));
+      if (!opensMember) break;
+      if (mods[tok.value]) {
+        this.issues.push({
+          code: "duplicate-modifier",
+          start: tok.start,
+          end: tok.end,
+          data: { modifier: tok.value },
+        });
+      }
+      if (!modTok) modTok = tok;
+      mods[tok.value] = true;
+      this.next();
+    }
+    return { mods, modTok };
+  }
+
+  /**
+   * `[<expression>]` naming a struct member after a language symbol, with the brackets
+   * still ahead: `func [symbol.dispose]() { ... }` (MyLang2 2.3).
+   *
+   * The expression is analysed like any other, so `symbol` and `.dispose` get their
+   * references, hover and highlighting for free. What the member is *called* is the
+   * bracketed source, the way the interpreter names it in a stack trace; which protocol
+   * it joins is decided by the expression, and only the two protocol symbols are allowed.
+   */
+  parseSymbolKey() {
+    const open = this.next(); // [
+    const from = this.peek().start;
+    this.parseExpr();
+    const to = this.lastEnd();
+    const close = this.isPunct("]") ? this.next() : null;
+    const source = this.text.slice(from, to).replace(/\s+/g, "");
+    const protocol = /^symbol\.(dispose|iterator)$/.exec(source);
+    return {
+      source,
+      protocol: protocol ? protocol[1] : null,
+      start: open.start,
+      end: close ? close.end : to,
+      keyStart: from,
+      keyEnd: to,
+    };
+  }
+
+  /**
+   * File a symbol member under the protocol it implements and report what the parser
+   * would refuse: a modifier on it, an expression that is not a protocol symbol, and the
+   * same protocol declared twice in one struct.
+   */
+  registerSymbolMember(owner, sym, key, modTok) {
+    if (!owner.symbolMembers) owner.symbolMembers = new Map();
+    // every one of them, in source order, for the outline; the map is the protocol index
+    if (!owner.symbolMemberList) owner.symbolMemberList = [];
+    owner.symbolMemberList.push(sym);
+
+    if (modTok) {
+      this.issues.push({
+        code: "symbol-member-modifier",
+        start: modTok.start,
+        end: modTok.end,
+        data: { modifier: modTok.value, member: sym.name },
+      });
+    }
+
+    if (!key.protocol) {
+      this.issues.push({
+        code: "symbol-member-unknown",
+        start: key.keyStart,
+        end: key.keyEnd,
+        data: { source: key.source },
+      });
+      return;
+    }
+
+    const first = owner.symbolMembers.get(key.protocol);
+    if (first) {
+      this.issues.push({
+        code: "symbol-member-duplicate",
+        start: key.start,
+        end: key.end,
+        data: { protocol: key.protocol, first },
+      });
+      return;
+    }
+    owner.symbolMembers.set(key.protocol, sym);
+  }
+
   /** Track struct fields and methods for member completion/navigation. */
   parseStruct(opts) {
     const kw = this.next(); // struct
@@ -758,8 +913,10 @@ class Analyzer {
       scope.thisType = { kind: "instance", symbol: sym };
       while (!this.eof && !this.isPunct("}")) {
         const before = this.p;
-        if (this.isKw("var")) this.parseVar({ kind: "field", owner: sym });
-        else if (this.isKw("func")) this.parseFunction({ owner: sym, thisType: scope.thisType });
+        const { mods, modTok } = this.structModifiers();
+        if (this.isKw("var")) this.parseVar({ kind: "field", owner: sym, mods, modTok });
+        else if (this.isKw("func"))
+          this.parseFunction({ owner: sym, thisType: scope.thisType, mods, modTok });
         else if (this.isPunct(",") || this.isPunct(";")) this.next();
         if (this.p === before) this.next();
       }
@@ -925,6 +1082,8 @@ class Analyzer {
     const info = M.importInfo(entry.source, multi);
     entry.kind = info.kind;
     entry.builtin = info.kind === "builtin";
+    entry.core = !!info.core;
+    entry.module = info.module || null;
     if (info.kind === "other" && !/[./\\]/.test(entry.source) && !entry.source.includes(":")) {
       this.issues.push({
         code: "unknown-module",
@@ -932,14 +1091,32 @@ class Analyzer {
         end: entry.tok.end,
         data: { source: entry.source, suggestion: closest(entry.source, M.BUILTIN_MODULES) },
       });
+    } else if (info.kind === "core-unknown") {
+      // `core:` names a module that ships with the interpreter and nothing else
+      this.issues.push({
+        code: "unknown-core-module",
+        start: entry.tok.start,
+        end: entry.tok.end,
+        data: {
+          source: entry.source,
+          name: info.module,
+          suggestion: closest(info.module, M.BUILTIN_MODULES),
+        },
+      });
     }
 
     let type = null;
-    if (entry.builtin) type = M.moduleType(entry.source);
+    if (entry.builtin) type = M.moduleType(info.module);
     else if (info.kind === "file") type = { kind: "file", path: entry.source };
+    else if (info.kind === "json") type = { kind: "file", path: entry.source, json: true };
     else if (info.kind === "package") type = { kind: "file", path: entry.source, package: true };
 
     if (destructured) {
+      entry.destructured = destructured.map((t) => ({
+        name: t.value,
+        start: t.start,
+        end: t.end,
+      }));
       for (const nameTok of destructured) {
         let t = null;
         if (type) {
@@ -951,7 +1128,7 @@ class Analyzer {
               start: nameTok.start,
               end: nameTok.end,
               data: {
-                module: entry.source,
+                module: info.module || entry.source,
                 name: nameTok.value,
                 suggestion: closest(
                   nameTok.value,
@@ -1079,7 +1256,14 @@ class Analyzer {
         }
         if (this.peek().type === "reflect" && this.peek().value === "in") {
           this.next();
-          this.parseExpr();
+          const iterable = this.parseExpr();
+          // `for (var item in items)` gives `item` the element type of `items`
+          if (declared.length === 1 && !declared[0].type) {
+            const element = M.iterationType(iterable && iterable.type);
+            if (element) declared[0].type = element;
+            else if (iterable && iterable.deferType && iterable._ref)
+              declared[0].deferIteration = iterable._ref;
+          }
         }
       } else if (!this.isPunct(";")) {
         this.parseExpr();
@@ -1194,7 +1378,13 @@ class Analyzer {
     // a `return` followed by a keyword that starts a new statement on the next line is bare
     const info = this.parseExpr();
     const fn = this.currentFn();
-    if (fn && info && info.type && !fn.returnType) fn.returnType = info.type;
+    if (!fn || !info) return;
+    if (!fn.returnCandidates) fn.returnCandidates = [];
+    fn.returnCandidates.push(
+      info.type ||
+        (info._ref ? { ref: info._ref } : info.memberRef ? { memberRef: info.memberRef } : null),
+    );
+    if (info.type && !fn.returnType) fn.returnType = info.type;
   }
 
   // ───────────────────────── expressions ─────────────────────────
@@ -1207,8 +1397,22 @@ class Analyzer {
       if (t.type === "op") {
         if (ASSIGN_OPS.has(t.value)) {
           this.markWrite(info, t.value !== "=");
+          const op = t.value;
           this.next();
           const rhs = this.parseExpr();
+          // `this.items = []` in a constructor is what tells us the field's type
+          if (op === "=" && info && info.memberRef && rhs) {
+            this.fieldAssignments.push({
+              memberRef: info.memberRef,
+              value:
+                rhs.type ||
+                (rhs._ref
+                  ? { ref: rhs._ref }
+                  : rhs.memberRef
+                    ? { memberRef: rhs.memberRef }
+                    : null),
+            });
+          }
           return rhs || info;
         }
         if (BIN_OPS.has(t.value)) {
@@ -1259,7 +1463,24 @@ class Analyzer {
     if (info.root && (info.viaMember || info.viaIndex)) {
       this.mutations.push({ root: info.root, start: info.targetStart, end: info.targetEnd });
     }
-    if (info.memberRef) info.memberRef.write = true;
+    if (info.memberRef) {
+      info.memberRef.write = true;
+      // `Color.Red = 1` and `Color.Red++` alike: an enum member is a constant, and `++`
+      // goes through the same path as `+= 1`, so the same rule applies (MyLang2 2.3)
+      const member = info.memberRef.member;
+      const symbol = member && member.origin === "user" ? member.symbol : null;
+      if (symbol && symbol.kind === "enumMember") {
+        this.issues.push({
+          code: "enum-member-assign",
+          start: info.memberRef.start,
+          end: info.memberRef.end,
+          data: {
+            name: info.memberRef.name,
+            owner: symbol.parent ? symbol.parent.name : "",
+          },
+        });
+      }
+    }
   }
 
   parseUnary() {
@@ -1315,7 +1536,9 @@ class Analyzer {
       if (t.type === "op" && (t.value === "++" || t.value === "--")) {
         this.next();
         this.markWrite(info, true);
-        info = { type: null };
+        // postfix: the expression is the value *before* the step, so it keeps the type
+        // the target had — `var prev = o.n++;` is as typed as `var prev = o.n;`
+        info = { type: (info && info.type) || null };
         continue;
       }
       break;
@@ -1361,8 +1584,9 @@ class Analyzer {
     const open = this.next(); // [
     this.parseExpr();
     if (this.isPunct("]")) this.next();
+    // `items[0]` is an element of `items`, `text[0]` a character of `text`
     return {
-      type: null,
+      type: M.indexType(info && info.type),
       viaIndex: true,
       root: info && info.root ? info.root : null,
       targetStart: info && info.targetStart != null ? info.targetStart : open.start,
@@ -1424,15 +1648,22 @@ class Analyzer {
     record.close = close ? close.end : this.text.length;
 
     const result = M.callResult(calleeType);
-    return { type: result, root: null };
+    // a user function's result may still be refined after the whole file is parsed
+    const callee =
+      calleeType && calleeType.kind === "function" && calleeType.symbol ? calleeType.symbol : null;
+    return { type: result, root: null, calleeSymbol: callee };
   }
 
   parsePrimary() {
     const t = this.peek();
     switch (t.type) {
-      case "number":
+      case "number": {
         this.next();
-        return { type: { kind: "primitive", name: "number" } };
+        // the language tells `int`, `float` and `bigint` apart, and so does `typeof`
+        const text = this.text.slice(t.start, t.end);
+        const name = text.endsWith("n") ? "bigint" : /[.]|[eE][+-]?\d/.test(text) ? "float" : "int";
+        return { type: { kind: "primitive", name } };
+      }
       case "string":
         this.next();
         if (t.kind === "interp" && t.exprs) this.parseInterpolations(t);
@@ -1489,23 +1720,43 @@ class Analyzer {
         return this.parseEnum({ declaration: false });
       case "import": {
         if (this.isPunct("(", 1)) {
-          // dynamic import("file")
+          // dynamic import("file") / import("core:strings")
           const kw = this.next();
           this.next();
+          let type = null;
           if (this.peek().type === "string") {
             const strTok = this.next();
+            const source = stringValue(strTok);
+            const info = M.importInfo(source);
             this.imports.push({
-              source: stringValue(strTok),
+              source,
               tok: strTok,
               kind: "dynamic",
+              resolvedKind: info.kind,
+              module: info.module || null,
+              core: !!info.core,
               symbols: [],
               stmtStart: kw.start,
               stmtEnd: strTok.end,
-              builtin: false,
+              builtin: info.kind === "builtin",
             });
+            // a dynamic import of a built-in is the module itself, so members resolve
+            if (info.kind === "builtin") type = M.moduleType(info.module);
+            else if (info.kind === "core-unknown") {
+              this.issues.push({
+                code: "unknown-core-module",
+                start: strTok.start,
+                end: strTok.end,
+                data: {
+                  source,
+                  name: info.module,
+                  suggestion: closest(info.module, M.BUILTIN_MODULES),
+                },
+              });
+            }
           }
           if (this.isPunct(")")) this.next();
-          return { type: null };
+          return { type };
         }
         this.next();
         const ref = this.addRef(t, { keywordGlobal: true });
@@ -1579,19 +1830,25 @@ class Analyzer {
       : { type: null };
   }
 
+  /** `[a, b, c]`; when every element has the same type the array is typed `array<T>`. */
   parseArray() {
     this.next(); // [
+    const elements = [];
+    let spread = false;
     while (!this.eof && !this.isPunct("]")) {
       if (this.isPunct(",")) {
         this.next();
         continue;
       }
       const before = this.p;
-      this.parseExpr();
+      if (this.isOp("...")) spread = true;
+      const info = this.parseExpr();
+      elements.push(info && info.type ? info.type : null);
       if (this.p === before) this.next();
     }
     if (this.isPunct("]")) this.next();
-    return { type: { kind: "primitive", name: "array" } };
+    const element = spread || !elements.length ? null : M.unifyTypes(elements);
+    return { type: M.arrayOf(element) };
   }
 
   parseObject() {
@@ -1704,6 +1961,8 @@ class Analyzer {
             psym.doc = documentedParam.description;
             psym.jsdoc = parseJSDoc(documentedParam.description);
             psym.jsdoc.type = documentedParam.type;
+            if (documentedParam.type) param.type = documentedParam.type;
+            if (documentedParam.optional) param.optional = true;
           }
           if (this.isOp("=")) {
             this.next();
@@ -1769,7 +2028,7 @@ class Analyzer {
         ref.symbol = sym;
         sym.refs.push(ref);
         if (ref.read) sym.reads++;
-      } else if (lang.IMPLICIT_NAMES.has(ref.name) || this.options.globals?.has(ref.name)) {
+      } else if (this.isImplicitName(ref)) {
         ref.builtin = true;
       } else if (!ref.keywordGlobal) {
         this.issues.push({
@@ -1781,13 +2040,200 @@ class Analyzer {
       }
     }
 
-    // types that depend on resolution: variables initialised from other identifiers, `var x = y`
-    const typeOfRef = (ref) => {
-      if (ref.symbol) return this.typeOfSymbol(ref.symbol);
-      if (ref.builtin) return M.globalType(ref.name);
-      return null;
+    // Types are settled in a loop: a field typed by `@type` gives a method its return
+    // type, which in turn types the variable that holds the call's result.
+    this.applyDocumentedTypes();
+    for (let pass = 0; pass < 5; pass++) {
+      const changed = this.settleTypes();
+      this.applyDocumentedTypes();
+      if (!changed) break;
+    }
+  }
+
+  /**
+   * Is this name resolvable without a declaration? Implicit globals always are;
+   * `arguments` only inside a function body.
+   */
+  isImplicitName(ref) {
+    if (this.options.globals?.has(ref.name)) return true;
+    if (!lang.IMPLICIT_NAMES.has(ref.name)) return false;
+    if (!lang.FUNCTION_SCOPED_NAMES.has(ref.name)) return true;
+    for (let s = ref.scope; s; s = s.parent) if (s.kind === "function") return true;
+    return false;
+  }
+
+  /** Type of a reference once every declaration is known. */
+  typeOfResolvedRef(ref) {
+    if (!ref) return null;
+    if (ref.symbol) return this.typeOfSymbol(ref.symbol);
+    if (ref.builtin || ref.keywordGlobal) return M.globalType(ref.name);
+    return null;
+  }
+
+  /** Type of `owner.name` re-evaluated against the owner type as it stands now. */
+  typeOfLateMember(memberRef) {
+    if (!memberRef || !memberRef.ownerType) return null;
+    const member = M.memberOf(memberRef.ownerType, memberRef.name);
+    return member ? M.memberType(memberRef.ownerType, member) : null;
+  }
+
+  /** The type a deferred initialiser produces right now, or null. */
+  lateTypeOf(source) {
+    if (!source) return null;
+    if (source.ref) return this.typeOfResolvedRef(source.ref);
+    if (source.memberRef) return this.typeOfLateMember(source.memberRef);
+    if (source.iterationRef) return M.iterationType(this.typeOfResolvedRef(source.iterationRef));
+    if (source.kind) return source; // already a type
+    return null;
+  }
+
+  /**
+   * One round of the types that are only knowable after the whole file is parsed:
+   * `var a = b` with `b` declared later, object shorthand (`{ name }`),
+   * `for (var item in items)`, member access, and results of user functions.
+   * @returns {boolean} whether anything became known
+   */
+  settleTypes() {
+    let changed = false;
+    const assign = (sym, type) => {
+      if (!type || M.sameType(sym.type, type)) return;
+      if (sym.type && !this.preferDocumented(sym.type, type)) return;
+      sym.type = type;
+      changed = true;
     };
-    void typeOfRef;
+
+    for (const sym of this.symbols) {
+      if (sym.deferRef) assign(sym, this.typeOfResolvedRef(sym.deferRef));
+      if (sym.deferMemberRef) assign(sym, this.typeOfLateMember(sym.deferMemberRef));
+      if (sym.deferIteration)
+        assign(sym, M.iterationType(this.typeOfResolvedRef(sym.deferIteration)));
+    }
+
+    // a function's result: the common type of its `return` statements
+    for (const sym of this.symbols) {
+      if (!sym.returnCandidates) continue;
+      const types = sym.returnCandidates.map((c) => this.lateTypeOf(c));
+      const unified = M.unifyTypes(types);
+      const next = unified || (types.length === 1 ? types[0] : null);
+      if (next && !M.sameType(sym.returnType, next)) {
+        if (!sym.returnType || this.preferDocumented(sym.returnType, next)) {
+          sym.returnType = next;
+          changed = true;
+        }
+      }
+    }
+
+    // `var value = compute();` once `compute`'s result type is final
+    for (const sym of this.symbols) {
+      const callee = sym.deferCallee;
+      if (callee && callee.returnType) assign(sym, callee.returnType);
+    }
+
+    // fields a constructor fills in: `this.items = []`
+    for (const { memberRef, value } of this.fieldAssignments) {
+      const owner = memberRef.ownerType;
+      if (!owner || (owner.kind !== "instance" && owner.kind !== "object")) continue;
+      const member = M.memberOf(owner, memberRef.name);
+      const sym = member && member.origin === "user" ? member.symbol : null;
+      if (sym && !sym.type) assign(sym, this.lateTypeOf(value));
+    }
+    return changed;
+  }
+
+  /**
+   * JSDoc `@type` / `@param {T}` / `@returns {T}` as editor types. Inference always
+   * wins: documentation only fills in what the analyzer could not work out itself.
+   */
+  applyDocumentedTypes() {
+    for (const sym of this.symbols) {
+      const jsdoc = sym.jsdoc;
+      if (!jsdoc) continue;
+      if (!sym.type && jsdoc.type) {
+        const type = this.typeFromDoc(jsdoc.type, sym.scope);
+        if (type) {
+          sym.type = type;
+          sym.documentedType = jsdoc.type;
+        }
+      }
+      if (
+        (sym.kind === "function" || sym.kind === "method") &&
+        jsdoc.returns &&
+        jsdoc.returns.type
+      ) {
+        const type = this.typeFromDoc(jsdoc.returns.type, sym.scope);
+        if (type && this.preferDocumented(sym.returnType, type)) sym.returnType = type;
+      }
+    }
+  }
+
+  /**
+   * Should a documented type replace an inferred one? Only when it adds information:
+   * nothing was inferred, or the inference stopped at a bare `array` the documentation
+   * describes in full (`@returns {string[]}`). Otherwise the code wins.
+   */
+  preferDocumented(inferred, documented) {
+    if (!inferred) return true;
+    if (inferred.kind === "array" && documented.kind === "array" && !inferred.element)
+      return !!documented.element;
+    return false;
+  }
+
+  /**
+   * A documented type name as an editor type: primitives, `T[]` / `Array<T>` and the
+   * structs and enums the file declares (`@returns {User}` -> a `User` instance).
+   */
+  typeFromDoc(text, scope) {
+    const raw = String(text || "")
+      .replace(/^\s*\(?\s*/, "")
+      .replace(/\s*\)?\s*$/, "")
+      .trim();
+    if (!raw || raw === "*" || raw === "any" || raw === "unknown") return null;
+
+    // `string?` / `?string` / `string|nil` describe an optional value of that type
+    const optional = raw.replace(/\?/g, "").trim();
+    const parts = optional
+      .split("|")
+      .map((p) => p.trim())
+      .filter((p) => p && p !== "nil" && p !== "null" && p !== "undefined");
+    if (parts.length !== 1) return null;
+    const name = parts[0];
+
+    const array = /^(?:Array|array)\s*<([\s\S]+)>$/.exec(name) || /^([\s\S]+?)\[\]$/.exec(name);
+    if (array) return M.arrayOf(this.typeFromDoc(array[1], scope));
+
+    const lower = name.toLowerCase();
+    const DOC_PRIMITIVES = {
+      string: "string",
+      str: "string",
+      int: "int",
+      integer: "int",
+      float: "float",
+      number: "float",
+      double: "float",
+      bool: "bool",
+      boolean: "bool",
+      nil: "nil",
+      null: "nil",
+      void: "nil",
+      object: "object",
+      bytes: "bytes",
+      buffer: "bytes",
+      func: "func",
+      function: "func",
+      bigint: "bigint",
+      map: "map",
+      set: "set",
+      iterable: "iterable",
+    };
+    if (lower === "array") return M.arrayOf(null);
+    if (DOC_PRIMITIVES[lower]) return { kind: "primitive", name: DOC_PRIMITIVES[lower] };
+
+    const declared = this.lookup(scope || this.root, name);
+    if (declared) {
+      if (declared.kind === "struct") return { kind: "instance", symbol: declared };
+      if (declared.kind === "enum") return { kind: "enumValue", symbol: declared };
+    }
+    return null;
   }
 
   /** Best-effort type of a symbol (follows `var a = b` aliases, import namespaces ...). */

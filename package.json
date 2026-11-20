@@ -2,7 +2,7 @@
   "name": "mylang2-support-language",
   "displayName": "MyLang2 Support Language",
   "description": "Language support for MyLang2: language server with diagnostics, completion, hover, go to definition, rename, semantic highlighting and more.",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "publisher": "Sempai-07",
   "author": "Sempai<zadmanthegreat@gmail.com>",
   "license": "ISC",
@@ -20,7 +20,8 @@
   "categories": [
     "Programming Languages",
     "Snippets",
-    "Linters"
+    "Linters",
+    "Formatters"
   ],
   "keywords": [
     "mylang",
@@ -71,6 +72,12 @@
         "path": "./snippets/mylang.json"
       }
     ],
+    "jsonValidation": [
+      {
+        "fileMatch": "mylang.json",
+        "url": "./schemas/mylang.schema.json"
+      }
+    ],
     "commands": [
       {
         "command": "mylang.runFile",
@@ -84,6 +91,14 @@
       {
         "command": "mylang.showStatus",
         "title": "MyLang: Show Language Server Status"
+      },
+      {
+        "command": "mylang.formatWorkspace",
+        "title": "MyLang: Format Workspace (prettier --write)"
+      },
+      {
+        "command": "mylang.checkFormatting",
+        "title": "MyLang: Check Formatting (prettier --check)"
       }
     ],
     "menus": {
@@ -118,7 +133,12 @@
         "mylang.executable": {
           "type": "string",
           "default": "mylang",
-          "description": "Command used by “Run Current File”."
+          "description": "Command used by “Run Current File” and the formatting commands."
+        },
+        "mylang.run.noColors": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Pass `--no-colors` to every command this extension runs, so the terminal gets plain text (MyLang2 2.3 and later). The switch also applies to what the program itself prints."
         },
         "mylang.diagnostics.enable": {
           "type": "boolean",
@@ -161,6 +181,18 @@
           "default": "warning",
           "description": "Severity of imports of unknown module names."
         },
+        "mylang.diagnostics.deprecated": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
+          "default": "warning",
+          "markdownDescription": "Severity of uses of APIs marked `@deprecated`."
+        },
         "mylang.diagnostics.unused": {
           "type": "string",
           "enum": [
@@ -181,6 +213,76 @@
           "type": "boolean",
           "default": true,
           "description": "Offer built-in modules that are not imported yet and add the import automatically."
+        },
+        "mylang.completion.coreNamespace": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write imports of built-in modules through the `core:` namespace (`import \"core:fs\"`). The namespaced form cannot be shadowed by a project dependency. Turn this off to insert the bare name (`import \"fs\"`)."
+        },
+        "mylang.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Format `.ml` files with the language's own formatter (`mylang prettier`, MyLang2 2.3 and later), so the editor and the command line always agree. The formatter is found the same way as the compiler; see `mylang.compiler.path`."
+        },
+        "mylang.format.configFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Read formatter settings from this file instead of the nearest `mylang.json` (the equivalent of `mylang prettier --config <file>`)."
+        },
+        "mylang.format.options": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "markdownDescription": "Formatter settings that win over the project's `mylang.json`, the way a flag beats the file on the command line. Leave empty to use the project's settings.",
+          "properties": {
+            "indent": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 16,
+              "description": "Spaces per level of indentation."
+            },
+            "useTabs": {
+              "type": "boolean",
+              "description": "Indent with tabs instead of spaces."
+            },
+            "printWidth": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000,
+              "description": "Break longer lines at the commas of a bracket that closes on them; 0 never breaks."
+            },
+            "quote": {
+              "type": "string",
+              "enum": [
+                "double",
+                "single",
+                "preserve"
+              ],
+              "markdownDescription": "The quote plain strings are written with. `\"\"\"…\"\"\"` and `$\"…\"` strings are never touched."
+            },
+            "bracketSpacing": {
+              "type": "boolean",
+              "markdownDescription": "`{ a: 1 }` rather than `{a: 1}`."
+            },
+            "maxBlankLines": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10,
+              "description": "Keep at most this many empty lines in a row."
+            },
+            "endOfLine": {
+              "type": "string",
+              "enum": [
+                "lf",
+                "crlf"
+              ],
+              "description": "The line ending written."
+            },
+            "finalNewline": {
+              "type": "boolean",
+              "description": "End a non-empty file with exactly one line break."
+            }
+          }
         },
         "mylang.globals": {
           "type": "array",
@@ -204,6 +306,6 @@
     }
   },
   "devDependencies": {
-    "prettier": "^3.9.10"
+    "prettier": "^3.10.1"
   }
 }

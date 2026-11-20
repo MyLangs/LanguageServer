@@ -35,10 +35,19 @@ function closest(name, candidates) {
   return best;
 }
 
-/** "name(a, b?, ...rest)" */
-function formatParams(params) {
-  if (!params) return "...";
-  return params.map((p) => (p.rest ? "..." : "") + p.name + (p.optional ? "?" : "")).join(", ");
+/**
+ * One parameter as it is shown in signatures: `...rest`, `limit?`, `str: string`.
+ * The type comes from the standard-library generator or from `@param {T}`.
+ */
+function formatParam(param) {
+  const name = (param.rest ? "..." : "") + param.name + (param.optional ? "?" : "");
+  return param.type ? `${name}: ${param.type}` : name;
 }
 
-module.exports = { distance, closest, formatParams };
+/** "a, b?, ...rest" — with types when the parameters carry them. */
+function formatParams(params) {
+  if (!params) return "...";
+  return params.map(formatParam).join(", ");
+}
+
+module.exports = { distance, closest, formatParam, formatParams };

@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MyLang project file",
+  "description": "mylang.json: what `mylang init` writes, what `mylang install` reads, and the settings of `mylang prettier`.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Package name: lowercase letters, digits, '.', '_' or '-'.",
+      "pattern": "^[a-z0-9._-]+$"
+    },
+    "version": {
+      "type": "string",
+      "description": "Version of this package, as semver.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+].*)?$"
+    },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "license": { "type": "string" },
+    "repository": { "type": "string" },
+    "keywords": { "type": "array", "items": { "type": "string" } },
+    "main": {
+      "type": "string",
+      "description": "Entry file, relative to this file. Must end with .ml.",
+      "pattern": "\\.ml$"
+    },
+    "initScript": {
+      "type": "string",
+      "description": "A .ml file run before the program, whose declarations become globals. Names it defines belong in the `mylang.globals` setting so the editor does not report them as undefined."
+    },
+    "scripts": {
+      "type": "object",
+      "description": "Named commands for `mylang run <name>`.",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "start": { "type": "string" },
+        "dev": { "type": "string" },
+        "test": { "type": "string" },
+        "format": { "type": "string" },
+        "format:check": { "type": "string" }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Packages this project imports, as `name: \"Owner:repo\"`. Installed into `.module` by `mylang install`.",
+      "additionalProperties": { "type": "string" }
+    },
+    "devDependencies": {
+      "type": "object",
+      "description": "Packages only needed while developing.",
+      "additionalProperties": { "type": "string" }
+    },
+    "prettier": {
+      "type": "object",
+      "description": "Settings of `mylang prettier` (MyLang2 2.3), used by the formatter in this editor as well. An unknown name or an impossible value is an error, never silently ignored.",
+      "additionalProperties": false,
+      "properties": {
+        "indent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 2,
+          "description": "Spaces per indentation level."
+        },
+        "useTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Indent with tabs instead of spaces."
+        },
+        "printWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 100,
+          "description": "Lines longer than this are broken at the commas of a bracket that opens and closes on them. 0 never breaks a line."
+        },
+        "quote": {
+          "type": "string",
+          "enum": ["double", "single", "preserve"],
+          "default": "double",
+          "description": "Preferred quote. The other one is used for a string that would need fewer escapes with it; \"preserve\" leaves every string as written."
+        },
+        "bracketSpacing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Spaces just inside the braces of an object literal: `{ a: 1 }` against `{a: 1}`."
+        },
+        "maxBlankLines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 1,
+          "description": "Blank lines kept in a row. None are kept at the edges of a block."
+        },
+        "endOfLine": {
+          "type": "string",
+          "enum": ["lf", "crlf"],
+          "default": "lf",
+          "description": "Line terminator to write."
+        },
+        "finalNewline": {
+          "type": "boolean",
+          "default": true,
+          "description": "End the file with a newline."
+        },
+        "include": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["**/*.ml"],
+          "description": "Globs the formatter walks when it is given a folder."
+        },
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "node_modules/**",
+            "mylang_modules/**",
+            ".module/**",
+            ".mylang/**",
+            "dist/**",
+            ".git/**"
+          ],
+          "description": "Globs the formatter never touches."
+        }
+      }
+    }
+  }
+}

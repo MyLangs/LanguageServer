@@ -28,6 +28,7 @@ const Kind = {
   EnumMember: 20,
   Constant: 21,
   Struct: 22,
+  Event: 23,
 };
 
 const SYMBOL_KIND = {
@@ -99,12 +100,23 @@ function importInsertPosition(analysis, lines) {
   return { offset: end, line: pos.line, prefix: "\n", suffix: "" };
 }
 
-function importEdit(analysis, lines, moduleName) {
+/**
+ * How a built-in is spelled in an import the server writes itself. `core:` is the
+ * spelling the interpreter recommends (it can never be shadowed by a dependency);
+ * `mylang.completion.coreNamespace: false` goes back to the bare name.
+ */
+function importSpelling(moduleName, settings) {
+  const useCore = !settings || !settings.completion || settings.completion.coreNamespace !== false;
+  if (!useCore || !M.BUILTIN_MODULES.has(M.stripCoreNamespace(moduleName))) return moduleName;
+  return `${M.CORE_NAMESPACE}${M.stripCoreNamespace(moduleName)}`;
+}
+
+function importEdit(analysis, lines, moduleName, settings) {
   const where = importInsertPosition(analysis, lines);
   const pos = lines.positionAt(where.offset);
   return {
     range: { start: pos, end: pos },
-    newText: `${where.prefix}import "${moduleName}";${where.suffix}`,
+    newText: `${where.prefix}import "${importSpelling(moduleName, settings)}";${where.suffix}`,
   };
 }
 
@@ -189,15 +201,31 @@ function importPathItems(doc, entryTok, offset) {
     return items;
   }
 
+  // `core:<name>` first: it is the recommended spelling, and a dependency can never
+  // shadow it. The bare form stays available, ranked below.
+  const typedCore = prefix.startsWith(M.CORE_NAMESPACE);
   for (const name of M.BUILTIN_MODULES) {
+    const core = `${M.CORE_NAMESPACE}${name}`;
+    const mod = M.moduleDescriptor(name);
+    const detail = "built-in module" + (mod && mod.since ? ` · since ${mod.since}` : "");
+    items.push({
+      label: core,
+      kind: Kind.Module,
+      detail,
+      documentation: md(renderModule(name)),
+      textEdit: { range, newText: core },
+      filterText: core,
+      sortText: "0" + name,
+    });
+    if (typedCore) continue;
     items.push({
       label: name,
       kind: Kind.Module,
-      detail: "built-in module",
+      detail: detail + " (bare form)",
       documentation: md(renderModule(name)),
       textEdit: { range, newText: name },
       filterText: name,
-      sortText: "0" + name,
+      sortText: "3" + name,
     });
   }
   for (const { pkg, declared } of installedPackages(doc)) {
@@ -222,6 +250,52 @@ function importPathItems(doc, entryTok, offset) {
     sortText: "2",
   });
   return items;
+}
+
+// ───────────────────────── destructuring imports ─────────────────────────
+
+/**
+ * Inside `import "core:test" as { … }` the only useful names are the ones the module
+ * actually exposes, so they are offered instead of the usual scope completion.
+ * @returns {object[]|null} items, or null when the caret is somewhere else
+ */
+function importDestructuringItems(doc, offset, range) {
+  const { analysis, text } = doc;
+  const imp = analysis.imports.find(
+    (i) => i.kind !== "dynamic" && offset > i.tok.end && offset <= Math.max(i.stmtEnd, i.tok.end),
+  );
+  if (!imp) return null;
+
+  const between = text.slice(imp.tok.end, offset);
+  const open = between.lastIndexOf("{");
+  if (open < 0 || between.slice(open).includes("}") || !/\bas\b/.test(between.slice(0, open)))
+    return null;
+
+  // a destructured import binds member types to its symbols, so the namespace itself
+  // comes from the module descriptor or from what the resolved file exports
+  const owner = imp.builtin
+    ? M.moduleType(imp.module || imp.source)
+    : imp.members
+      ? { kind: "file", path: imp.source, members: imp.members }
+      : null;
+  const members = M.membersOf(owner);
+  if (!members.length) return [];
+
+  // names already taken out are not offered again - except the one being typed
+  const taken = new Set(
+    (imp.destructured || [])
+      .filter((entry) => offset < entry.start || offset > entry.end)
+      .map((entry) => entry.name),
+  );
+  return members
+    .filter((m) => !taken.has(m.name))
+    .map((m) => {
+      const item = memberItem(m, range, text, offset);
+      // a destructured name is written plainly, never as a call snippet
+      item.textEdit = { range, newText: m.name };
+      item.insertTextFormat = 1;
+      return item;
+    });
 }
 
 // ───────────────────────── JSDoc tag completion ─────────────────────────
@@ -284,6 +358,91 @@ function jsdocItems(doc, comment, offset) {
 /**
  * @returns {object[]} LSP CompletionItems
  */
+/**
+ * Option keys of a standard-library call, where the cursor sits in the object literal it
+ * takes: `http.Server({ | })`.
+ *
+ * The enclosing `{` has to be the call's own argument — `{ cors: { | } }` is a nested
+ * object this does not describe — and a key already written is left out.
+ *
+ * @returns {object[]|null} items, or null when this is not such a place
+ */
+function callOptionItems(doc, offset, range) {
+  const sig = doc.analysis.tokens.filter((t) => t.type !== "comment");
+
+  // the innermost bracket still open at the cursor
+  let depth = 0;
+  let openIdx = -1;
+  for (let i = sig.length - 1; i >= 0; i--) {
+    const t = sig[i];
+    if (t.start >= offset) continue;
+    if (t.type !== "punct") continue;
+    if (t.value === "}" || t.value === ")" || t.value === "]") depth++;
+    else if (t.value === "{" || t.value === "(" || t.value === "[") {
+      if (depth === 0) {
+        openIdx = i;
+        break;
+      }
+      depth--;
+    }
+  }
+  if (openIdx < 1 || sig[openIdx].value !== "{") return null;
+  if (sig[openIdx - 1].type !== "punct" || sig[openIdx - 1].value !== "(") return null;
+
+  // the member the call names, so the owner module is known rather than guessed
+  const nameTok = sig[openIdx - 2];
+  if (!nameTok) return null;
+  const ref = doc.analysis.memberRefs.find(
+    (r) => r.start === nameTok.start && r.end === nameTok.end,
+  );
+  if (!ref || !ref.ownerModule) return null;
+  const options = lang.CALL_OPTIONS[`${ref.ownerModule}.${ref.name}`];
+  if (!options) return null;
+
+  // keys the object already has
+  const written = new Set();
+  let level = 0;
+  for (let i = openIdx + 1; i < sig.length; i++) {
+    const t = sig[i];
+    if (t.type === "punct" && "{[(".includes(t.value)) level++;
+    else if (t.type === "punct" && "}])".includes(t.value)) {
+      if (level === 0) break;
+      level--;
+    } else if (level === 0 && t.type === "punct" && t.value === ":") {
+      const key = sig[i - 1];
+      // the key being typed is not "already written": it is what is being completed
+      if (key && !(offset >= key.start && offset <= key.end)) written.add(key.value);
+    }
+  }
+
+  return options
+    .filter((o) => !written.has(o.name))
+    .map((o) => ({
+      label: o.name,
+      kind: Kind.Property,
+      detail: o.detail + (o.since ? `  ·  new in ${o.since}` : ""),
+      documentation: md(o.doc),
+      sortText: o.since ? `0${o.name}` : `1${o.name}`,
+      textEdit: { range, newText: `${o.name}: ` },
+    }));
+}
+
+/**
+ * Whether a member may be named at `offset`.
+ *
+ * A `private` struct member (MyLang2 2.2) is reachable only from inside the struct that
+ * declares it, so offering it anywhere else would suggest code the interpreter refuses.
+ * Everything else is visible, and a member the analyzer knows nothing about stays visible
+ * too: a missing suggestion is worse than a redundant one.
+ */
+function isVisibleFrom(member, ownerType, offset) {
+  const sym = member && member.symbol;
+  if (!sym || !sym.mods || !sym.mods.private) return true;
+  const owner = ownerType && ownerType.symbol;
+  if (!owner) return true;
+  return offset >= owner.start && offset <= owner.end;
+}
+
 function complete(doc, offset, settings) {
   const { analysis, text, lines } = doc;
   const tokens = analysis.tokens;
@@ -333,8 +492,14 @@ function complete(doc, offset, settings) {
   });
   if (dot) {
     // owner type may have been enriched after parsing (imported files)
-    return M.membersOf(dot.ownerType).map((m) => memberItem(m, range, text, offset));
+    return M.membersOf(dot.ownerType)
+      .filter((m) => isVisibleFrom(m, dot.ownerType, offset))
+      .map((m) => memberItem(m, range, text, offset));
   }
+
+  // 3b. `import "core:test" as { describe, | }`
+  const destructuring = importDestructuringItems(doc, offset, range);
+  if (destructuring) return destructuring;
   // typing a `.` that the parser has not seen as postfix (e.g. after a number) -> nothing
   if (text[wordStart - 1] === ".") return [];
 
@@ -346,6 +511,25 @@ function complete(doc, offset, settings) {
     else break;
   }
   const prev = prevIdx >= 0 ? sig[prevIdx] : null;
+
+  // 4a. `http.Server({ | })`: the option keys of the call
+  const callOptions = callOptionItems(doc, offset, range);
+  if (callOptions) return callOptions;
+
+  // 4b. `func [|]` in a struct body: only a protocol symbol can stand there (MyLang2 2.3)
+  if (prev && prev.type === "punct" && prev.value === "[") {
+    const before = prevIdx > 0 ? sig[prevIdx - 1] : null;
+    if (before && before.type === "keyword" && before.value === "func") {
+      return lang.PROTOCOL_SYMBOLS.map((p) => ({
+        label: `symbol.${p.name}`,
+        kind: Kind.Event,
+        detail: p.detail,
+        documentation: md(p.doc),
+        textEdit: { range, newText: `symbol.${p.name}` },
+      }));
+    }
+  }
+
   if (prev && prev.type === "keyword" && ["var", "func", "struct", "enum"].includes(prev.value))
     return [];
   if (prev && prev.type === "keyword" && prev.value === "as") {
@@ -358,13 +542,17 @@ function complete(doc, offset, settings) {
   }
   if (prev && prev.type === "keyword" && prev.value === "import" && !wordMatch) {
     return [...M.BUILTIN_MODULES]
-      .map((n) => ({
-        label: `"${n}"`,
-        kind: Kind.Module,
-        detail: "built-in module",
-        insertText: `"${n}";`,
-        sortText: "0" + n,
-      }))
+      .map((n) => {
+        const spelling = importSpelling(n, settings);
+        return {
+          label: `"${spelling}"`,
+          kind: Kind.Module,
+          detail: "built-in module",
+          documentation: md(renderModule(n)),
+          insertText: `"${spelling}";`,
+          sortText: "0" + n,
+        };
+      })
       .concat(
         installedPackages(doc).map(({ pkg, declared }) => ({
           label: `"${pkg.source}"`,
@@ -408,7 +596,13 @@ function complete(doc, offset, settings) {
     });
   }
 
+  const insideFunction = (() => {
+    for (let s = scope; s; s = s.parent) if (s.kind === "function") return true;
+    return false;
+  })();
   for (const [name, desc] of Object.entries(lang.GLOBALS)) {
+    // `arguments` exists only inside a function body
+    if (lang.FUNCTION_SCOPED_NAMES.has(name) && !insideFunction) continue;
     add({
       label: name,
       kind: desc.kind === "function" ? Kind.Function : Kind.Variable,
@@ -466,11 +660,11 @@ function complete(doc, offset, settings) {
       add({
         label: alias,
         kind: Kind.Module,
-        detail: `auto-import "${moduleName}"`,
+        detail: `auto-import "${importSpelling(moduleName, settings)}"`,
         sortText: "4" + alias,
         documentation: md(renderModule(moduleName)),
         textEdit: { range, newText: alias },
-        additionalTextEdits: [importEdit(analysis, lines, moduleName)],
+        additionalTextEdits: [importEdit(analysis, lines, moduleName, settings)],
       });
     }
   }
@@ -491,11 +685,11 @@ function complete(doc, offset, settings) {
         sortText: "4" + pkg.name,
         documentation: md(renderPackage(pkg.source, { status: "ok", pkg })),
         textEdit: { range, newText: pkg.name },
-        additionalTextEdits: [importEdit(analysis, lines, pkg.source)],
+        additionalTextEdits: [importEdit(analysis, lines, pkg.source, settings)],
       });
     }
   }
   return items;
 }
 
-module.exports = { complete, importEdit, aliasIndex, installedPackages, Kind };
+module.exports = { complete, importEdit, importSpelling, aliasIndex, installedPackages, Kind };

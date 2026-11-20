@@ -78,6 +78,31 @@ async function stopClient() {
   }
 }
 
+/** The reusable "MyLang" terminal, rooted at `cwd`. */
+function terminalAt(cwd) {
+  let terminal = vscode.window.terminals.find((t) => t.name === "MyLang");
+  if (!terminal || terminal.exitStatus)
+    terminal = vscode.window.createTerminal({ name: "MyLang", cwd });
+  terminal.show(true);
+  return terminal;
+}
+
+/** Folder a command should run from: the document's workspace folder, else its own. */
+function workspaceDirOf(uri) {
+  const folder = uri && vscode.workspace.getWorkspaceFolder(uri);
+  if (folder) return folder.uri.fsPath;
+  if (uri) return path.dirname(uri.fsPath);
+  const first = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+  return first ? first.uri.fsPath : process.cwd();
+}
+
+/** `mylang`, plus `--no-colors` when the setting asks for plain output (MyLang2 2.3). */
+function executable() {
+  const cfg = vscode.workspace.getConfiguration("mylang");
+  const exe = cfg.get("executable") || "mylang";
+  return cfg.get("run.noColors") ? `${exe} --no-colors` : exe;
+}
+
 /** Run the active MyLang script in a reusable VS Code terminal. */
 function runFile() {
   const editor = vscode.window.activeTextEditor;
@@ -87,17 +112,24 @@ function runFile() {
   }
   const doc = editor.document;
   const run = async () => {
-    const exe = vscode.workspace.getConfiguration("mylang").get("executable") || "mylang";
-    const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
-    const cwd = folder ? folder.uri.fsPath : path.dirname(doc.uri.fsPath);
+    const cwd = workspaceDirOf(doc.uri);
     const rel = path.relative(cwd, doc.uri.fsPath);
-    let terminal = vscode.window.terminals.find((t) => t.name === "MyLang");
-    if (!terminal || terminal.exitStatus)
-      terminal = vscode.window.createTerminal({ name: "MyLang", cwd });
-    terminal.show(true);
-    terminal.sendText(`${exe} "${rel}"`);
+    terminalAt(cwd).sendText(`${executable()} "${rel}"`);
   };
   (doc.isDirty ? doc.save() : Promise.resolve(true)).then(run);
+}
+
+/**
+ * `mylang prettier` over the workspace (MyLang2 2.3). "Format Document" goes through the
+ * language server and never touches the disk; these two are the whole-project commands,
+ * so they run as the command line does and their output belongs in a terminal.
+ */
+function formatWorkspace(mode) {
+  const editor = vscode.window.activeTextEditor;
+  const cwd = workspaceDirOf(editor && editor.document.uri);
+  terminalAt(cwd).sendText(
+    `${executable()} prettier ${mode === "check" ? "--check" : "--write"} .`,
+  );
 }
 
 async function activate(context) {
@@ -105,6 +137,8 @@ async function activate(context) {
   context.subscriptions.push(
     output,
     vscode.commands.registerCommand("mylang.runFile", runFile),
+    vscode.commands.registerCommand("mylang.formatWorkspace", () => formatWorkspace("write")),
+    vscode.commands.registerCommand("mylang.checkFormatting", () => formatWorkspace("check")),
     vscode.commands.registerCommand("mylang.restartServer", async () => {
       await stopClient();
       await startClient(context);
